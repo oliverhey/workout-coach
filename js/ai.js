@@ -237,7 +237,8 @@ export async function structureLogs(entries, knownNames) {
   const system = [
     'You convert a lifter\'s raw workout notes into structured data. Be exact: copy every set as written; do not invent, round or fill in missing numbers (use null).',
     'Sets are written like "70x12", "80x 10 pain 3/10", "20x15" etc. A per-set "pain n/10" goes into that set\'s pain. An "overall pain" line goes into the exercise note. A set explicitly called "warm up" is wu=true.',
-    'If an entry is not a workout log (a question, a plan request, chat), return nothing for it. If one entry contains two different dated workouts, return two sessions. If the same workout appears in several entries (re-sent or corrected), return it each time; duplicates are handled later.',
+    'Some entries are coach reviews or logs that mix performed sets with targets ("next time 92.5×8–10"), plans for the next session and comparisons with earlier dates ("Aug 2: 85×8"). Extract only the sets actually performed in that entry\'s own session: never targets, plans or numbers quoted from other dates. If the performed sets for an exercise are not recorded, return the exercise with an empty sets list and say so in its note.',
+    'If an entry is not a workout log (a question, a plan request, chat, a pure comparison table), return nothing for it. If one entry contains two different dated workouts, return two sessions. If the same workout appears in several entries (re-sent or corrected), return it each time; duplicates are handled later.',
     `Split days: ${state.days.map(d => `${d.id} = ${d.name}`).join('; ')}. Pick the closest; use "other" only for sessions that match none (e.g. a pure cardio day).`,
   ].join('\n');
   const user = [

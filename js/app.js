@@ -675,7 +675,7 @@ function renderSettings() {
     <div class="card">
       <div class="btn-row">
         <button class="btn sm primary" data-action="open-import">Import ChatGPT export</button>
-        <button class="btn sm" data-action="open-paste">Paste notes</button>
+        <button class="btn sm" data-action="open-paste">Import notes / Markdown</button>
         <button class="btn sm" data-action="rebuild-plans">Rebuild all plans</button>
         <button class="btn sm" data-action="merge-ex">Merge exercise names</button>
       </div>
@@ -687,7 +687,7 @@ function renderSettings() {
     </div>
     <h2>Danger zone</h2>
     <div class="card"><button class="btn sm danger" data-action="wipe">Delete all data…</button></div>
-    <div class="center tiny dim mt">Workout Coach v2.1</div>`;
+    <div class="center tiny dim mt">Workout Coach v2.3</div>`;
 
   $('#st-save').onclick = async () => {
     s.apiKey = $('#st-key').value.trim();
@@ -801,16 +801,30 @@ function importDialog() {
 
 function pasteDialog() {
   if (!hasKey()) { toast('Add your Anthropic API key in Settings first.', 4000); ui.tab = 'settings'; return render(); }
-  modal(`<div class="row between"><h3>Paste workout notes</h3><button class="icon-btn" data-close>✕</button></div>
+  modal(`<div class="row between"><h3>Import notes</h3><button class="icon-btn" data-close>✕</button></div>
     <div id="im-body">
-      <div class="small muted mb">Paste one or many Apple Notes / chat logs. Each workout should start with its date (e.g. "Apr 3").</div>
-      <textarea class="input" id="pt-text" style="min-height:220px;font-size:14px"></textarea>
-      <label class="field mt"><span>Year, when the notes don't say</span><input class="input" id="pt-year" inputmode="numeric" value="${new Date().getFullYear()}"></label>
+      <div class="small muted mb">Choose a Markdown/text file, or paste Apple Notes or chat logs. Each workout should start with a line containing its date (e.g. "Apr 3", "## 16 August 2026", "2026-08-16").</div>
+      <label class="btn block mb">Choose .md or .txt file<input type="file" id="pt-file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden></label>
+      <textarea class="input" id="pt-text" style="min-height:200px;font-size:13.5px" placeholder="…or paste here"></textarea>
+      <div class="small mt" id="pt-count"></div>
+      <label class="field mt"><span>Year, when a date line doesn't say</span><input class="input" id="pt-year" inputmode="numeric" value="${new Date().getFullYear()}"></label>
       <button class="btn primary block" id="pt-go">Import</button>
     </div>`,
   (m, close) => {
+    const year = () => num(m.querySelector('#pt-year').value) || new Date().getFullYear();
+    const count = () => {
+      const t = m.querySelector('#pt-text').value;
+      const n = t.trim() ? splitPasted(t, year()).length : 0;
+      m.querySelector('#pt-count').innerHTML = t.trim() ? (n ? `<span class="pill good">${n} workouts found</span>` : '<span class="pill warn">No workouts recognised</span>') : '';
+    };
+    m.querySelector('#pt-text').addEventListener('input', count);
+    m.querySelector('#pt-year').addEventListener('input', count);
+    m.querySelector('#pt-file').onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      m.querySelector('#pt-text').value = await readFileText(f); count();
+    };
     m.querySelector('#pt-go').onclick = () => {
-      const entries = splitPasted(m.querySelector('#pt-text').value, num(m.querySelector('#pt-year').value) || new Date().getFullYear());
+      const entries = splitPasted(m.querySelector('#pt-text').value, year());
       if (!entries.length) return toast('No workout logs recognised');
       runImportUI(m.querySelector('#im-body'), entries, close);
     };

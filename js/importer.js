@@ -77,15 +77,36 @@ export function ratingFromReply(reply) {
 }
 
 // Split pasted text into entries at date-like header lines.
+const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|januar|februar|märz|maerz|mai|juni|juli|oktober|dezember';
+const DATE_RES = [
+  new RegExp(`\\b(${MONTHS})\\.?\\s+\\d{1,2}(st|nd|rd|th)?\\b`, 'i'),            // Apr 3 / August 16, 2026
+  new RegExp(`\\b\\d{1,2}(st|nd|rd|th)?\\.?\\s+(${MONTHS})\\b`, 'i'),            // 16 August / 16. August
+  /\b\d{4}-\d{2}-\d{2}\b/,                                                       // 2026-08-16
+  /(^|[^\d.,])\d{1,2}[./]\d{1,2}[./](\d{4}|\d{2})(?![\d.,]*\s*[x×*])\b/,          // 16.08.2026 / 16/08/26 (not 17.5×12)
+];
+// A date line: a Markdown heading or a short line, containing a date, and not a set like "17.5×12".
+export function isDateHeader(line) {
+  const l = line.trim();
+  if (!l || l.length > 90 || l.startsWith('|')) return false;   // table rows are never headers
+  if (/\d\s*[x×]\s*\d/.test(l) && !/^#/.test(l)) return false;
+  return DATE_RES.some(r => r.test(l));
+}
+
+// Split pasted text / a Markdown file into one entry per dated workout.
 export function splitPasted(text, year) {
   const lines = String(text).replace(/\r/g, '').split('\n');
-  const isHeader = l => /^\s*(#+\s*)?(📒\s*)?([A-Z][a-z]{2,8}\.?\s+\d{1,2}(,?\s*\d{4})?|\d{1,2}[./]\s?\d{1,2}[./]?\s?(\d{2,4})?|\d{4}-\d{2}-\d{2})\b/.test(l);
   const chunks = []; let cur = [];
-  for (const l of lines) { if (isHeader(l) && cur.join('').trim()) { chunks.push(cur.join('\n')); cur = []; } cur.push(l); }
+  // Consecutive date lines (e.g. an export header "## Apr 3 · 2026-04-03" followed by the note's own title "Apr 3")
+  // stay together: a new chunk only starts once the current one actually contains sets.
+  const hasSets = arr => (arr.join('\n').match(SET_RE) || []).length > 0;
+  for (const l of lines) { if (isDateHeader(l) && hasSets(cur)) { chunks.push(cur.join('\n')); cur = []; } cur.push(l); }
   if (cur.join('').trim()) chunks.push(cur.join('\n'));
   const ts = `${year}-12-31`;
-  return chunks.filter(looksLikeWorkout).map(t => ({ id: uid(), ts, tsMs: Date.now(), text: t.trim(), reply: '' }));
+  return chunks.filter(c => (c.match(SET_RE) || []).length >= 2).map(t => ({ id: 'txt_' + hash(t), ts, tsMs: Date.now(), text: t.trim(), reply: '' }));
 }
+
+// Stable id per chunk, so re-importing the same file skips what was already imported.
+function hash(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + s.length.toString(36); }
 
 function batches(entries, maxChars = 14000, maxN = 12) {
   const out = []; let cur = []; let n = 0;

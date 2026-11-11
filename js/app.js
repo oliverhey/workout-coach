@@ -8,6 +8,7 @@ import { md, esc } from './md.js';
 import { analyzeSession, adjustPlan, progressReport, MODELS, hasKey, AIError } from './ai.js';
 import { lineChart } from './charts.js';
 import { parseExport, splitPasted, runImport, resetImportProgress, mergeExercise } from './importer.js';
+import { reviewPrompt, planChangePrompt, rebuildAllPrompt, reportPrompt, parseReview, parsePlanReply, parseRebuild } from './manual.js';
 
 const $ = sel => document.querySelector(sel);
 const view = $('#view');
@@ -89,18 +90,17 @@ function renderTrain() {
   const draft = draftSession();
   if (draft) return renderLogger(draft);
   const next = suggestNextDay();
-  const pending = doneSessions().filter(s => s.analysis && ['pending', 'error'].includes(s.analysis.status));
+  const pending = doneSessions().filter(s => s.analysis && ['pending', 'error', 'manual'].includes(s.analysis.status)).slice(0, 3);
   const latest = doneSessions()[0];
   let html = '';
 
-  if (!hasKey()) html += `<div class="card"><div class="row"><div class="grow"><b>Connect the coach</b><div class="small muted">Add your Anthropic API key in Settings so sessions get analysed automatically.</div></div><button class="btn sm primary" data-go="settings">Settings</button></div></div>`;
   if (!doneSessions().length) html += `<div class="card"><b>Bring over your history</b><div class="small muted mt">Import your ChatGPT data export so the coach knows your last 1.5 years.</div><button class="btn sm primary mt" data-action="open-import">Import ChatGPT export</button></div>`;
   for (const p of pending) {
-    const st = running.has(p.id) ? '<span class="spinner"></span> Analysing…' : p.analysis.status === 'error' ? `<span class="pill bad">Failed</span>` : navigator.onLine ? '<span class="pill accent">Queued</span>' : '<span class="pill warn">Waiting for connection</span>';
+    const st = running.has(p.id) ? '<span class="spinner"></span> Analysing…' : p.analysis.status === 'manual' ? '<span class="pill red">Get review</span>' : p.analysis.status === 'error' ? `<span class="pill bad">Failed</span>` : navigator.onLine ? '<span class="pill accent">Queued</span>' : '<span class="pill warn">Waiting for connection</span>';
     html += `<div class="card tap" data-open="${p.id}"><div class="row between"><div><b>${esc(p.title || dayById(p.dayId).name)}</b> <span class="muted small">${fmtDate(p.date, { day: 'numeric', month: 'short' })}</span></div><div class="row small">${st}</div></div>${p.analysis.status === 'error' ? `<div class="tiny muted mt">${esc(p.analysis.error || '')}</div>` : ''}</div>`;
   }
 
-  if (latest && latest.analysis && latest.analysis.status === 'done' && latest.analysis.source === 'claude' && daysAgo(latest.date) <= 2) {
+  if (latest && latest.analysis && latest.analysis.status === 'done' && ['claude', 'claude-app'].includes(latest.analysis.source) && daysAgo(latest.date) <= 2) {
     html += `<div class="card tap" data-open="${latest.id}"><div class="row between"><div class="small muted">Latest review · ${fmtDate(latest.date, { weekday: 'short', day: 'numeric', month: 'short' })}</div>${ratingPill(latest.analysis.rating)}</div><div class="mt">${esc(latest.analysis.headline || '')}</div></div>`;
   }
 
@@ -318,14 +318,14 @@ function finishDialog(s) {
   const empty = s.exercises.filter(ex => !ex.sets.some(x => x.w != null || x.r != null)).map(ex => ex.name);
   modal(`<h3>Finish workout</h3>
     <p class="muted">${logged} sets logged.${empty.length ? ` No sets recorded for: ${esc(empty.join(', '))} (kept in the log as "not recorded").` : ''} Empty target rows are dropped.</p>
-    <p class="small muted">${s.finishedAt ? 'Your changes are saved. The existing review is kept; use "Re-run review" on the session page if you want a new one.' : hasKey() ? (navigator.onLine ? 'The coach will review it now and prepare your next session.' : 'You are offline: the review runs automatically once you are back online.') : 'No API key set, so the session is saved without a review. You can run the review later.'}</p>
+    <p class="small muted">${s.finishedAt ? 'Your changes are saved. The existing review is kept; use "Re-run review" on the session page if you want a new one.' : hasKey() ? (navigator.onLine ? 'The coach will review it now and prepare your next session.' : 'You are offline: the review runs automatically once you are back online.') : 'Next you copy the session into the Claude app and paste the coach\'s reply back — the app then prepares your next session.'}</p>
     <div class="btn-row mt"><button class="btn grow" data-close>Keep logging</button><button class="btn primary grow" id="fin-ok">Finish</button></div>`,
   (m, close) => {
     m.querySelector('#fin-ok').onclick = async () => {
       cleanSession(s);
       const isEdit = !!s.finishedAt;   // editing an older session keeps its review; re-run it from the session page if wanted
       s.status = 'done'; s.finishedAt = s.finishedAt || Date.now();
-      if (!isEdit) s.analysis = hasKey() ? { status: 'pending' } : null;
+      if (!isEdit) s.analysis = hasKey() ? { status: 'pending' } : { status: 'manual' };
       await save.session(s); sortSessions(); close();
       ui.tab = 'train'; ui.detail = s.id; render(); window.scrollTo(0, 0);
       runPending();
@@ -370,6 +370,56 @@ async function analyse(s) {
   }
 }
 
+
+// ---------------------------------------------------------------- FREE MODE (copy & paste via the Claude app)
+const CLAUDE_URL = 'https://claude.ai/new';
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('Copied — paste it into a new Claude chat'); return true; }
+  catch (e) {
+    modal(`<h3>Copy this prompt</h3><div class="small muted mb">Tap in the box, Select All, Copy — then paste it into a new Claude chat.</div>
+      <textarea class="input" id="cp-fallback" style="min-height:300px;font-size:12px" readonly>${esc(text)}</textarea><button class="btn block mt" data-close>Done</button>`,
+    m => { const t = m.querySelector('#cp-fallback'); t.focus(); t.select(); });
+    return false;
+  }
+}
+function manualSteps(id, what = 'prompt') {
+  return `<div class="mstep"><div class="kicker">Step 1</div><div class="small mb">Copy the ${what} and paste it into a <b>new chat</b> in the Claude app.</div>
+      <div class="btn-row"><button class="btn primary grow" id="${id}-copy">Copy for Claude</button><a class="btn" href="${CLAUDE_URL}" target="_blank" rel="noopener">Open Claude</a></div></div>
+    <div class="mstep mt"><div class="kicker">Step 2</div><div class="small mb">When Claude has answered, copy its whole reply (copy icon below the answer) and paste it here.</div>
+      <textarea class="input" id="${id}-reply" placeholder="Paste Claude's reply…" style="min-height:130px;font-size:13.5px"></textarea>
+      <div class="btn-row mt"><button class="btn sm" id="${id}-paste">Paste</button><button class="btn primary grow" id="${id}-save">Save reply</button></div></div>`;
+}
+function wireManual(root, id, getPrompt, onSave) {
+  root.querySelector(`#${id}-copy`).onclick = () => copyText(getPrompt());
+  root.querySelector(`#${id}-paste`).onclick = async () => {
+    try { root.querySelector(`#${id}-reply`).value = await navigator.clipboard.readText(); } catch (e) { toast('Tap the box and paste manually'); root.querySelector(`#${id}-reply`).focus(); }
+  };
+  root.querySelector(`#${id}-save`).onclick = async e => {
+    const text = root.querySelector(`#${id}-reply`).value.trim();
+    if (!text) return toast('Paste Claude\'s reply first');
+    try { await onSave(text); } catch (err) { toast(err.message, 5000); }
+  };
+}
+function manualReviewHTML(s) {
+  return `<div class="card" id="mr-box"><div class="kicker">Coach review</div><div class="cond" style="font-size:20px;font-weight:700;text-transform:uppercase;margin:4px 0 12px">Get it from the Claude app</div>
+    ${manualSteps('mr', 'session')}
+    ${s.analysis.prev ? '<button class="btn sm ghost mt" data-action="keep-review" data-id="' + s.id + '">Keep the previous review</button>' : ''}</div>`;
+}
+async function saveManualReview(s, text) {
+  const r = parseReview(text, s.dayId, s.id);
+  s.analysis = { status: 'done', source: 'claude-app', rating: r.rating, headline: r.headline, markdown: r.markdown, summary: r.summary, at: Date.now() };
+  await save.session(s);
+  const latest = lastSessionForDay(s.dayId);
+  if (r.plan && s.dayId !== 'other' && latest && latest.id === s.id) {
+    const prev = state.plans[s.dayId];
+    state.plans[s.dayId] = { ...r.plan, prev: prev ? { ...prev, prev: undefined } : null };
+    await save.plans();
+    toast(`Saved${r.rating != null ? ` — ${fmtW(r.rating)}/10` : ''}. Next ${dayById(s.dayId).name} is ready.`, 3500);
+  } else if (!r.plan) toast('Review saved, but no plan was found in the reply — your next plan is unchanged.', 5000);
+  else toast('Review saved.');
+  render(); window.scrollTo(0, 0);
+}
+
 // ---------------------------------------------------------------- SESSION DETAIL
 function sessionStats(s) {
   let volume = 0, sets = 0; const prs = [];
@@ -394,6 +444,7 @@ function renderDetail(s) {
   const a = s.analysis;
   let analysisHTML = '';
   if (running.has(s.id)) analysisHTML = `<div class="card row"><span class="spinner"></span><div>The coach is reviewing this session…</div></div>`;
+  else if (a && a.status === 'manual') analysisHTML = manualReviewHTML(s);
   else if (!a) analysisHTML = `<div class="card"><div class="muted small">No review yet.</div><button class="btn sm primary mt" data-action="reanalyse" data-id="${s.id}">Review this session</button></div>`;
   else if (a.status === 'pending') analysisHTML = `<div class="card"><span class="pill warn">${navigator.onLine ? 'Queued' : 'Waiting for connection'}</span><div class="small muted mt">The review runs automatically when you are online.</div></div>`;
   else if (a.status === 'error') analysisHTML = `<div class="card"><span class="pill bad">Review failed</span><div class="small muted mt">${esc(a.error || '')}</div><button class="btn sm primary mt" data-action="reanalyse" data-id="${s.id}">Try again</button></div>`;
@@ -427,6 +478,7 @@ function renderDetail(s) {
       <button class="btn sm" data-action="edit-session" data-id="${s.id}">Edit</button>
       <button class="btn sm danger" data-action="delete-session" data-id="${s.id}">Delete</button>
     </div>`;
+  if (a && a.status === 'manual') wireManual(view, 'mr', () => reviewPrompt(s), text => saveManualReview(s, text));
 }
 
 // ---------------------------------------------------------------- HISTORY
@@ -548,6 +600,16 @@ function renderCoach() {
   $('#rp-go').onclick = async e => {
     const btn = e.currentTarget;
     const from = $('#rp-from').value, to = $('#rp-to').value, focus = $('#rp-focus').value.trim();
+    if (!hasKey()) {
+      const pr = reportPrompt(from, to, focus);
+      if (!pr.count) return toast('No sessions in that period');
+      modal(`<div class="row between"><h3>Progress report</h3><button class="icon-btn" data-close>✕</button></div><div class="small muted mb">${pr.count} sessions, ${fmtDate(from)} – ${fmtDate(to)}</div>${manualSteps('rpm', 'sessions')}`,
+      (m, close) => wireManual(m, 'rpm', () => pr.text, async text => {
+        const r = { id: uid(), from, to, focus, at: Date.now(), markdown: text };
+        state.reports.unshift(r); await save.reports(); close(); render(); openReport(r.id);
+      }));
+      return;
+    }
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Writing report…';
     try {
       const text = await progressReport(from, to, focus);
@@ -626,6 +688,12 @@ function changePlanDialog(dayId) {
     m.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { m.querySelector('#cp-req').value = b.dataset.chip; });
     m.querySelector('#cp-go').onclick = async e => {
       const req = m.querySelector('#cp-req').value.trim(); if (!req) return;
+      if (!hasKey()) {
+        m.innerHTML = `<div class="row between"><h3>Change ${esc(d.name)} plan</h3><button class="icon-btn" id="cpm-x">✕</button></div><div class="small muted mb">Request: ${esc(req)}</div>${manualSteps('cpm')}`;
+        m.querySelector('#cpm-x').onclick = close;
+        wireManual(m, 'cpm', () => planChangePrompt(dayId, req), async text => { const { explanation, plan } = parsePlanReply(text, dayId); close(); proposePlan(dayId, plan, explanation); });
+        return;
+      }
       const btn = e.currentTarget; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Thinking…';
       try {
         const { explanation, plan } = await adjustPlan(dayId, req);
@@ -654,7 +722,8 @@ function renderSettings() {
   view.innerHTML = `
     <h2>Claude coach</h2>
     <div class="card">
-      <label class="field"><span>Anthropic API key</span><input class="input" id="st-key" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(s.apiKey)}"></label>
+      <div class="small mb">${hasKey() ? '<span class="pill good">Automatic mode</span> Reviews run in the background via the API.' : '<span class="pill red">Free mode</span> No key: after each workout you copy the session into the Claude app and paste the reply back. Covered by your Claude plan.'}</div>
+      <label class="field"><span>Anthropic API key (optional, paid separately)</span><input class="input" id="st-key" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(s.apiKey)}"></label>
       <div class="small muted mb">Stored only on this device and sent only to api.anthropic.com. Create one at console.anthropic.com → API Keys.</div>
       <label class="field"><span>Model</span><select class="input" id="st-model">${MODELS.map(m => `<option value="${m.id}" ${m.id === s.model ? 'selected' : ''}>${m.label}</option>`).join('')}${MODELS.find(m => m.id === s.model) ? '' : `<option selected value="${esc(s.model)}">${esc(s.model)}</option>`}</select></label>
       <label class="field"><span>Custom model ID (optional, overrides the list)</span><input class="input" id="st-model-custom" placeholder="e.g. claude-sonnet-5-5" value=""></label>
@@ -687,7 +756,7 @@ function renderSettings() {
     </div>
     <h2>Danger zone</h2>
     <div class="card"><button class="btn sm danger" data-action="wipe">Delete all data…</button></div>
-    <div class="center tiny dim mt">Workout Coach v2.3</div>`;
+    <div class="center tiny dim mt">Workout Coach v3.0</div>`;
 
   $('#st-save').onclick = async () => {
     s.apiKey = $('#st-key').value.trim();
@@ -722,7 +791,17 @@ function exportBackup() {
 }
 
 async function rebuildPlans() {
-  if (!hasKey()) return toast('Add your API key in Settings first');
+  if (!doneSessions().length) return toast('No history yet');
+  if (!hasKey()) {
+    modal(`<div class="row between"><h3>Rebuild all plans</h3><button class="icon-btn" data-close>✕</button></div>
+      <div class="small muted mb">The coach builds your next session for every split day from your latest history.</div>${manualSteps('rbm', 'history')}`,
+    (m, close) => wireManual(m, 'rbm', () => rebuildAllPrompt(), async text => {
+      const plans = parseRebuild(text);
+      for (const [dayId, plan] of Object.entries(plans)) { const old = state.plans[dayId]; state.plans[dayId] = { ...plan, prev: old ? { ...old, prev: undefined } : null }; }
+      await save.plans(); close(); render(); toast(`${Object.keys(plans).length} plans updated — undo per day on the Coach tab`, 4000);
+    }));
+    return;
+  }
   if (!(await confirmDialog('Rebuild all plans?', 'The coach builds a fresh next-session plan for each split day from your latest history. You can undo per day on the Coach tab.', 'Rebuild'))) return;
   const close = modal(`<h3>Rebuilding plans</h3><div id="rb-log" class="small muted"></div>`);
   const log = document.getElementById('rb-log');
@@ -763,7 +842,7 @@ function mergeDialog() {
 
 // ---------------------------------------------------------------- IMPORT
 function importDialog() {
-  if (!hasKey()) { toast('Add your Anthropic API key in Settings first — the import uses the coach to read your logs.', 4500); ui.tab = 'settings'; return render(); }
+  if (!hasKey()) return toast('Importing raw logs needs an API key. Without one, restore a prepared backup file instead (Settings → Restore backup).', 6000);
   modal(`<div class="row between"><h3>Import ChatGPT export</h3><button class="icon-btn" data-close>✕</button></div>
     <div id="im-body">
       <ol class="small muted" style="padding-left:18px">
@@ -800,7 +879,7 @@ function importDialog() {
 }
 
 function pasteDialog() {
-  if (!hasKey()) { toast('Add your Anthropic API key in Settings first.', 4000); ui.tab = 'settings'; return render(); }
+  if (!hasKey()) return toast('Importing raw notes needs an API key. Without one, restore a prepared backup file instead (Settings → Restore backup).', 6000);
   modal(`<div class="row between"><h3>Import notes</h3><button class="icon-btn" data-close>✕</button></div>
     <div id="im-body">
       <div class="small muted mb">Choose a Markdown/text file, or paste Apple Notes or chat logs. Each workout should start with a line containing its date (e.g. "Apr 3", "## 16 August 2026", "2026-08-16").</div>
@@ -869,7 +948,7 @@ view.addEventListener('click', async e => {
   if (ds.open) { ui.detail = ds.open; render(); window.scrollTo(0, 0); return; }
   if (ds.go) return go(ds.go);
   if (ds.plan) return showPlan(ds.plan);
-  if (ds.changePlan) return hasKey() ? changePlanDialog(ds.changePlan) : toast('Add your API key in Settings first');
+  if (ds.changePlan) return changePlanDialog(ds.changePlan);
   if (ds.undoPlan) {
     const p = state.plans[ds.undoPlan];
     if (p && p.prev && await confirmDialog('Undo last plan change?', 'The previous plan for this day is restored.', 'Undo')) { state.plans[ds.undoPlan] = p.prev; await save.plans(); render(); }
@@ -882,9 +961,10 @@ view.addEventListener('click', async e => {
   if (['check', 'toggle-wu', 'add-set', 'del-set', 'ex-menu', 'add-ex', 'discard', 'finish'].includes(a)) return loggerAction(a, t);
   switch (a) {
     case 'back': ui.detail = null; render(); return;
+    case 'keep-review': { const s = state.sessions.find(x => x.id === ds.id); if (s && s.analysis && s.analysis.prev) { s.analysis = s.analysis.prev; await save.session(s); render(); } return; }
     case 'reanalyse': {
       const s = state.sessions.find(x => x.id === ds.id); if (!s) return;
-      if (!hasKey()) return toast('Add your API key in Settings first');
+      if (!hasKey()) { s.analysis = { status: 'manual', prev: s.analysis && s.analysis.status === 'done' ? s.analysis : null }; await save.session(s); render(); setTimeout(() => document.getElementById('mr-box')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60); return; }
       if (s.analysis && s.analysis.status === 'done' && !(await confirmDialog('Re-run the review?', 'The current review is replaced. If this is your latest session for the day, the next plan is regenerated too (undo is available on the Coach tab).', 'Re-run'))) return;
       s.analysis = { status: 'pending' }; await save.session(s);
       return analyse(s);

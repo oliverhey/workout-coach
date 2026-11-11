@@ -52,7 +52,7 @@ async function call({ system, messages, tool, maxTokens = 8000 }) {
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
 }
 
-function coachSystem() {
+export function coachSystem() {
   const s = state.settings;
   return [
     'You are the personal strength & hypertrophy coach of one client. You keep a long-running training log for them and plan every session.',
@@ -97,7 +97,7 @@ const PLAN_SCHEMA = {
   required: ['general_note', 'exercises'],
 };
 
-function planFromTool(dayId, ns, sourceSessionId, origin) {
+export function planFromTool(dayId, ns, sourceSessionId, origin) {
   return {
     dayId, origin, createdAt: Date.now(), sourceSessionId: sourceSessionId || null,
     generalNote: ns.general_note || '',
@@ -108,7 +108,7 @@ function planFromTool(dayId, ns, sourceSessionId, origin) {
   };
 }
 
-function historyContext(dayId, excludeId) {
+export function historyContext(dayId, excludeId) {
   const depth = state.settings.historyDepth || 8;
   const same = sessionsForDay(dayId).filter(s => s.id !== excludeId).slice(0, depth);
   const others = state.days.filter(d => d.id !== dayId).map(d => sessionsForDay(d.id).filter(s => s.id !== excludeId)[0]).filter(Boolean);

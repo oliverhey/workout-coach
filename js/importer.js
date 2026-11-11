@@ -3,7 +3,7 @@ import { state, save, uid, normName, sortSessions, allExerciseNames } from './st
 import { db } from './db.js';
 import { structureLogs } from './ai.js';
 
-const SET_RE = /\b\d+(?:[.,]\d+)?\s*[x×]\s*\d+/gi;
+const SET_RE = /\b\d+(?:[.,]\d+)?\s*(?:kg)?\s*[x×]\s*\d+/gi;
 export const looksLikeWorkout = t => (String(t).match(SET_RE) || []).length >= 4;
 
 function textOf(msg) {

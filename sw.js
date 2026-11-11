@@ -1,8 +1,8 @@
 // Offline-first service worker: the whole app shell is cached; API calls always go to the network.
-const CACHE = 'workout-coach-v5';
+const CACHE = 'workout-coach-v7';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
-  'js/app.js', 'js/store.js', 'js/db.js', 'js/ai.js', 'js/md.js', 'js/charts.js', 'js/importer.js',
+  'js/app.js', 'js/store.js', 'js/db.js', 'js/ai.js', 'js/md.js', 'js/charts.js', 'js/importer.js', 'js/manual.js',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/anton-latin-400-normal.woff2', 'fonts/oswald-latin-500-normal.woff2', 'fonts/oswald-latin-600-normal.woff2', 'fonts/oswald-latin-700-normal.woff2',
   'fonts/inter-latin-400-normal.woff2', 'fonts/inter-latin-500-normal.woff2', 'fonts/inter-latin-600-normal.woff2', 'fonts/inter-latin-700-normal.woff2',

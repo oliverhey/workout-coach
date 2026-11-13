@@ -84,7 +84,7 @@ function render() {
   ({ train: renderTrain, history: renderHistory, progress: renderProgress, coach: renderCoach, settings: renderSettings })[ui.tab]();
 }
 
-function go(tab) { ui.tab = tab; ui.detail = null; render(); window.scrollTo(0, 0); }
+function go(tab) { ui.tab = tab; ui.detail = null; render(); window.scrollTo(0, 0); document.getElementById('tabbar').classList.remove('compact'); }
 
 // ---------------------------------------------------------------- TRAIN (home)
 function renderTrain() {
@@ -557,9 +557,9 @@ function renderHistory() {
     const m = s.date.slice(0, 7);
     if (m !== month) { month = m; html += `<h2>${fmtDate(m + '-01', { month: 'long', year: 'numeric' })}</h2>`; }
     const d = dayById(s.dayId);
-    html += `<div class="card tap hist-item" data-open="${s.id}" style="border-left:3px solid ${d.color}">
+    html += `<div class="card tap hist-item" data-open="${s.id}">
       <div class="date"><div class="dn">${+s.date.slice(8)}</div><div class="dw">${fmtDate(s.date, { weekday: 'short' })}</div></div>
-      <div class="grow" style="min-width:0"><div class="t ellipsis">${esc(s.title || d.name)}</div><div class="sum ellipsis">${topSetsLine(s) || '—'}</div></div>
+      <div class="grow" style="min-width:0"><div class="t ellipsis"><span class="dot" style="background:${d.color}"></span>${esc(s.title || d.name)}</div><div class="sum ellipsis">${topSetsLine(s) || '—'}</div></div>
       ${s.analysis && s.analysis.rating != null ? `<div class="rating" style="font-size:20px">${fmtW(s.analysis.rating)}</div>` : s.analysis && s.analysis.status === 'pending' ? '<span class="pill warn">Queued</span>' : ''}</div>`;
   }
   if (list.length > 400) html += `<div class="center small muted">Showing the latest 400 of ${list.length}.</div>`;
@@ -665,8 +665,8 @@ function renderCoach() {
   let html = `<h2>Next session plans</h2>`;
   for (const d of planDays()) {
     const p = state.plans[d.id];
-    html += `<div class="card" style="border-left:3px solid ${d.color}">
-      <div class="row between"><h3>${esc(d.name)}</h3><span class="tiny dim">${p ? (p.origin === 'starter' ? 'starter plan' : p.origin === 'manual' ? 'edited' : 'from coach · ' + new Date(p.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })) : ''}</span></div>
+    html += `<div class="card">
+      <div class="row between"><h3><span class="dot" style="background:${d.color}"></span>${esc(d.name)}</h3><span class="tiny dim">${p ? (p.origin === 'starter' ? 'starter plan' : p.origin === 'manual' ? 'edited' : 'from coach · ' + new Date(p.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })) : ''}</span></div>
       <div class="btn-row mt"><button class="btn sm" data-plan="${d.id}">View</button><button class="btn sm primary" data-change-plan="${d.id}">Change plan…</button>${p && p.prev ? `<button class="btn sm ghost" data-undo-plan="${d.id}">Undo last change</button>` : ''}</div></div>`;
   }
   html += `<h2>Progress report</h2>
@@ -715,7 +715,11 @@ function openReport(id) {
 
 function showPlan(dayId) {
   const d = dayById(dayId);
-  modal(`<div class="row between"><h3>Next ${esc(d.name)}</h3><button class="icon-btn" data-close>✕</button></div>${planHTML(state.plans[dayId])}
+  const last = lastSessionForDay(dayId);
+  const noPlan = !state.plans[dayId] || !(state.plans[dayId].exercises || []).length;
+  modal(`<div class="row between"><h3>Next ${esc(d.name)}</h3><button class="icon-btn" data-close>✕</button></div>${noPlan
+    ? `<div class="small muted mb">No coach plan yet. ${last ? `Your next workout starts from your last session (${fmtDate(last.date, { day: 'numeric', month: 'short' })}) as targets; the first review or <b>Rebuild plans</b> creates a proper plan.` : 'Your first workout starts empty.'}</div>`
+    : planHTML(state.plans[dayId])}
     <div class="btn-row mt"><button class="btn grow" id="sp-edit">Edit manually</button><button class="btn primary grow" id="sp-change">Ask coach to change</button></div>`,
   (m, close) => {
     m.querySelector('#sp-change').onclick = () => { close(); changePlanDialog(dayId); };
@@ -844,7 +848,7 @@ function renderSettings() {
     </div>
     <h2>Danger zone</h2>
     <div class="card"><button class="btn sm danger" data-action="wipe">Delete all data…</button></div>
-    <div class="center tiny dim mt">Workout Coach v3.5</div>`;
+    <div class="center tiny dim mt">Workout Coach v4.0</div>`;
 
   $('#st-save').onclick = async () => {
     s.apiKey = $('#st-key').value.trim();
@@ -1100,6 +1104,14 @@ view.addEventListener('click', async e => {
     }
   }
 });
+
+let lastY = 0;
+window.addEventListener('scroll', () => {
+  const y = window.scrollY, tb = document.getElementById('tabbar');
+  if (y < 60 || y < lastY - 6) tb.classList.remove('compact');
+  else if (y > lastY + 6) tb.classList.add('compact');
+  lastY = y;
+}, { passive: true });
 
 function updateNet() { $('#net-status').hidden = navigator.onLine; }
 window.addEventListener('online', () => { updateNet(); runPending(); if (ui.tab === 'train' || ui.detail) render(); });

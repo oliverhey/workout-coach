@@ -189,6 +189,7 @@ export function sessionToText(s, { withAnalysis = false } = {}) {
     const setTxt = sets.length ? sets.map(x => fmtSet(x)).join(', ') : '(listed, no sets recorded)';
     lines.push(`- ${ex.name}: ${setTxt}${ex.userNote ? ` — note: ${ex.userNote}` : ''}`);
   }
+  if (s.skipped && s.skipped.length) lines.push(`Skipped today for lack of time (deliberate — do not penalise): ${s.skipped.join(', ')}`);
   if (s.notes) lines.push(`Session notes: ${s.notes}`);
   if (withAnalysis && s.analysis && s.analysis.summary) lines.push(`Coach summary then: ${s.analysis.summary}`);
   return lines.join('\n');

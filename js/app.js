@@ -350,15 +350,22 @@ function addExerciseDialog(s) {
   });
 }
 
+const isFlexDay = dayId => ['travel', 'free'].includes(dayById(dayId).kind);
 function cleanSession(s) {
   for (const ex of s.exercises) ex.sets = ex.sets.filter(x => x.w != null || x.r != null);
+  // TRX & Free sessions depend on available time: exercises without sets count as skipped, not as "not recorded".
+  if (isFlexDay(s.dayId)) {
+    const skipped = s.exercises.filter(ex => !ex.sets.length).map(ex => ex.name);
+    s.skipped = [...new Set([...(s.skipped || []), ...skipped])];
+    s.exercises = s.exercises.filter(ex => ex.sets.length);
+  }
 }
 
 function finishDialog(s) {
   const logged = s.exercises.reduce((a, ex) => a + ex.sets.filter(x => x.w != null || x.r != null).length, 0);
   const empty = s.exercises.filter(ex => !ex.sets.some(x => x.w != null || x.r != null)).map(ex => ex.name);
   modal(`<h3>Finish workout</h3>
-    <p class="muted">${logged} sets logged.${empty.length ? ` No sets recorded for: ${esc(empty.join(', '))} (kept in the log as "not recorded").` : ''} Empty target rows are dropped.</p>
+    <p class="muted">${logged} sets logged.${empty.length ? (isFlexDay(s.dayId) ? ` Skipped today: ${esc(empty.join(', '))}. That's fine for a ${esc(dayById(s.dayId).name)} session — the coach rates only what you did.` : ` No sets recorded for: ${esc(empty.join(', '))} (kept in the log as "not recorded").`) : ''} Empty target rows are dropped.</p>
     <p class="small muted">${s.finishedAt ? 'Your changes are saved. The existing review is kept; use "Re-run review" on the session page if you want a new one.' : hasKey() ? (navigator.onLine ? 'The coach will review it now and prepare your next session.' : 'You are offline: the review runs automatically once you are back online.') : 'Next you copy the session into the Claude app and paste the coach\'s reply back — the app then prepares your next session.'}</p>
     <div class="btn-row mt"><button class="btn grow" data-close>Keep logging</button><button class="btn primary grow" id="fin-ok">Finish</button></div>`,
   (m, close) => {
@@ -529,6 +536,7 @@ function renderDetail(s) {
     ${planLink}
     <h2>Logged</h2>
     <div class="card">${(s.exercises || []).map(ex => `<div class="ex-sum"><div class="n">${esc(ex.name)}${st.prs.includes(normName(ex.name)) ? '<span class="pr">New best</span>' : ''}</div><div class="set-list">${ex.sets.length ? ex.sets.map(x => `<b>${esc(fmtSet(x, { pain: false }))}</b>${x.pain != null ? `<span class="${x.pain >= 3 ? 'pill bad' : 'dim'}" style="margin-left:4px">${x.pain}/10</span>` : ''}`).join('<span class="dim"> · </span>') : '<span class="dim">not recorded</span>'}</div>${ex.userNote ? `<div class="small muted">Note: ${esc(ex.userNote)}</div>` : ''}</div>`).join('')}
+      ${s.skipped && s.skipped.length ? `<div class="small muted mt">Skipped (time): ${esc(s.skipped.join(', '))}</div>` : ''}
       ${s.notes ? `<div class="small muted mt">Session notes: ${esc(s.notes)}</div>` : ''}${s.bodyweight ? `<div class="small muted">Body weight: ${fmtW(s.bodyweight)} kg</div>` : ''}</div>
     <div class="btn-row mt">
       ${a && a.status === 'done' ? `<button class="btn sm" data-action="reanalyse" data-id="${s.id}">Re-run review</button>` : ''}
@@ -836,7 +844,7 @@ function renderSettings() {
     </div>
     <h2>Danger zone</h2>
     <div class="card"><button class="btn sm danger" data-action="wipe">Delete all data…</button></div>
-    <div class="center tiny dim mt">Workout Coach v3.4</div>`;
+    <div class="center tiny dim mt">Workout Coach v3.5</div>`;
 
   $('#st-save').onclick = async () => {
     s.apiKey = $('#st-key').value.trim();

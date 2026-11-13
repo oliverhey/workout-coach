@@ -15,7 +15,7 @@ export function reviewPrompt(session) {
     historyContext(session.dayId, session.id),
     `## Plan that was prescribed for today\n${planToText(state.plans[session.dayId])}`,
     `## TODAY'S SESSION (review this one)\n${sessionToText(session)}`,
-    `Review today's session, rate it, and prescribe my next ${day.name} session. Keep exercise names stable; only change exercises or order with a reason.`,
+    `Review today's session, rate it, and prescribe my next ${day.name} session. Keep exercise names stable; only change exercises or order with a reason.${['travel', 'free'].includes(day.kind) ? ' This is a flexible session: rate only what I actually did; skipped exercises were a time decision and must not lower the rating.' : ''}`,
     `## Reply format (important)
 RATING: <number>/10
 HEADLINE: <one sentence verdict>

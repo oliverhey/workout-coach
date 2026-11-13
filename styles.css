@@ -265,3 +265,13 @@ textarea.input { min-height: 90px; resize: vertical; }
 .plan-ex .n { font-family: var(--cond); font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
 
 .mstep { border-left: 3px solid var(--line-2); padding-left: 12px; }
+.bandbtn { height: 42px; width: 100%; background: var(--bg-2); border: 1.5px solid var(--line); border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0 4px; font-family: var(--cond); font-weight: 600; font-size: 15px; }
+.bandbtn.ph { opacity: .45; }
+.bandbtn .plus { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.bdots { display: inline-flex; gap: 6px; align-items: center; }
+.bdg { display: inline-flex; align-items: center; gap: 2px; font-family: var(--cond); font-weight: 600; }
+.bdg b { font-weight: 600; }
+.bdg i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; box-shadow: 0 0 0 1px rgba(255,255,255,.25); }
+.band-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.band-row > i { width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255,255,255,.25); }
+.bcount { font-family: var(--display); font-size: 24px; min-width: 28px; text-align: center; }

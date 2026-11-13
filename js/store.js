@@ -1,11 +1,17 @@
 // App state, defaults and data helpers.
 import { db } from './db.js';
 
+// kind: 'split' = rotating main days (drive "Up next" and plans), 'free' = off-cycle extra workout (no fixed plan),
+// 'travel' = TRX / Bandit bands (own plan, outside the rotation; loads are band levels or bodyweight).
 export const DEFAULT_DAYS = [
-  { id: 'd1', name: 'Chest & Triceps', color: '#e4171f' },
-  { id: 'd2', name: 'Back & Biceps', color: '#f4f1ea' },
-  { id: 'd3', name: 'Legs & Shoulders', color: '#8a857c' },
+  { id: 'd1', name: 'Chest & Triceps', color: '#e4171f', kind: 'split' },
+  { id: 'd2', name: 'Back & Biceps', color: '#f4f1ea', kind: 'split' },
+  { id: 'd3', name: 'Legs & Shoulders', color: '#8a857c', kind: 'split' },
+  { id: 'd4', name: 'Free', color: '#5f5b55', kind: 'free' },
+  { id: 'd5', name: 'TRX & Bands', color: '#f2a531', kind: 'travel' },
 ];
+export const splitDays = () => state.days.filter(d => (d.kind || 'split') === 'split');
+export const planDays = () => state.days.filter(d => d.kind !== 'free');
 
 export const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -20,6 +26,8 @@ export const DEFAULT_SETTINGS = {
   ].join('\n'),
   coachStyle: 'Direct and specific, like a good personal coach. Rate the session out of 10. Say what went well and what did not, compare against previous sessions with a short table, and explain any change you make to the plan. Never invent data that was not logged.',
   historyDepth: 8,
+  // TRX Bandit bands: colour = resistance in kg at mid-stretch (manufacturer range in brackets). Edit in Settings.
+  bands: 'green = 10.2 kg (6.8–13.6 kg)\nblue = 4.5 kg (2.3–6.8 kg)\nyellow = 17 kg (11.3–22.7 kg)\norange = 23.8 kg (15.9–31.8 kg)',
 };
 
 export const state = {
@@ -49,7 +57,13 @@ export async function loadAll() {
     db.get('settings'), db.get('days'), db.get('plans'), db.get('reports'), db.get('usage'), db.getAllSessions(),
   ]);
   if (settings) state.settings = { ...DEFAULT_SETTINGS, ...settings };
+  if (/^\s*green\s*=\s*2\s*\n\s*blue\s*=\s*1\s*$/i.test(state.settings.bands || '')) state.settings.bands = DEFAULT_SETTINGS.bands; // old placeholder strengths → real kg values
   if (days && days.length) state.days = days;
+  // migrate: older installs only had the three split days
+  let changed = false;
+  for (const d of state.days) if (!d.kind) { d.kind = (DEFAULT_DAYS.find(x => x.id === d.id) || {}).kind || 'split'; changed = true; }
+  for (const def of DEFAULT_DAYS) if (!state.days.find(d => d.id === def.id)) { state.days.push({ ...def }); changed = true; }
+  if (changed) await db.set('days', state.days);
   if (plans) state.plans = plans;
   if (reports) state.reports = reports;
   if (usage) state.usage = usage;
@@ -83,8 +97,37 @@ export const num = v => { if (v === '' || v == null) return null; const n = Numb
 export const e1rm = (w, r) => (w && r ? w * (1 + Math.min(r, 20) / 30) : 0);
 export const fmtW = w => (w == null ? '?' : (Math.round(w * 100) / 100).toString());
 
+// ---------- resistance bands ----------
+const BAND_HEX = { green: '#36c56b', blue: '#3b82f6', red: '#e4171f', black: '#111111', yellow: '#f2c531', orange: '#f28a31', purple: '#9b6bff', grey: '#9a958c', gray: '#9a958c', white: '#f4f1ea', pink: '#ff7ab6' };
+export function bandList() {
+  return String(state.settings.bands || '').split(/\n|,/).map(l => l.trim()).filter(Boolean).map(l => {
+    const m = l.match(/^([a-zäöüß ]+?)\s*(?:=|:)\s*([\d.,]+)\s*(?:kg)?\s*(.*)$/i);
+    const name = (m ? m[1] : l).trim().toLowerCase();
+    return { name, value: m ? Number(m[2].replace(',', '.')) : 1, range: m ? m[3].replace(/^[(\s]+|[)\s]+$/g, '') : '', hex: BAND_HEX[name] || '#9a958c' };
+  });
+}
+export function parseBand(str) {
+  const out = {};
+  for (const m of String(str || '').toLowerCase().matchAll(/(\d+)\s*([a-zäöüß]+)/g)) out[m[2]] = (out[m[2]] || 0) + Number(m[1]);
+  return out;
+}
+export function fmtBand(obj) {
+  const order = bandList().map(b => b.name);
+  const keys = Object.keys(obj).filter(k => obj[k] > 0).sort((a, b) => (order.indexOf(a) + 99 * (order.indexOf(a) < 0)) - (order.indexOf(b) + 99 * (order.indexOf(b) < 0)));
+  return keys.map(k => `${obj[k]} ${k}`).join(' / ');
+}
+export function bandLoad(str) {
+  const vals = Object.fromEntries(bandList().map(b => [b.name, b.value]));
+  return Object.entries(parseBand(str)).reduce((a, [k, n]) => a + n * (vals[k] ?? 1), 0);
+}
+export const bandHex = name => (bandList().find(b => b.name === name) || {}).hex || BAND_HEX[name] || '#9a958c';
+// Effective load of a set: kg, or band strength units for band sets.
+export const effW = s => (s.band ? bandLoad(s.band) : s.w);
+export const isBandDay = dayId => dayById(dayId).kind === 'travel';
+
 export function fmtSet(s, { pain = true } = {}) {
-  const base = `${fmtW(s.w)}×${s.r == null ? '?' : s.r}`;
+  const load = s.band ? s.band : s.w == null && s.r != null && s.bw ? 'BW' : fmtW(s.w);
+  const base = `${load}×${s.r == null ? '?' : s.r}`;
   const p = pain && s.pain != null ? ` @${s.pain}/10` : '';
   return (s.wu ? 'wu ' : '') + base + p;
 }
@@ -92,8 +135,9 @@ export function fmtSet(s, { pain = true } = {}) {
 export function topSet(ex) {
   let best = null;
   for (const s of ex.sets || []) {
-    if (s.wu || s.w == null || s.r == null) continue;
-    if (!best || e1rm(s.w, s.r) > e1rm(best.w, best.r)) best = s;
+    const w = effW(s);
+    if (s.wu || w == null || s.r == null) continue;
+    if (!best || e1rm(w, s.r) > e1rm(effW(best), best.r)) best = s;
   }
   return best;
 }
@@ -155,7 +199,7 @@ export function planToText(p) {
   const lines = [];
   if (p.generalNote) lines.push(`General: ${p.generalNote}`);
   for (const ex of p.exercises || []) {
-    lines.push(`- ${ex.name}: ${(ex.sets || []).map(s => `${s.wu ? 'wu ' : ''}${s.w == null ? '?' : fmtW(s.w)}×${s.r ?? '?'}`).join(', ')}${ex.note ? ` — ${ex.note}` : ''}`);
+    lines.push(`- ${ex.name}: ${(ex.sets || []).map(s => `${s.wu ? 'wu ' : ''}${s.band ? s.band : s.w == null ? (s.bw ? 'BW' : '?') : fmtW(s.w)}×${s.r ?? '?'}`).join(', ')}${ex.note ? ` — ${ex.note}` : ''}`);
   }
   return lines.join('\n');
 }
@@ -167,7 +211,7 @@ export function exerciseBestsText(limit = 40) {
     const t = topSet(ex); if (!t) continue;
     const k = normName(ex.name);
     const cur = map.get(k) || { name: ex.name, first: null, best: null, last: null, n: 0 };
-    const rec = { date: s.date, w: t.w, r: t.r, e: e1rm(t.w, t.r) };
+    const rec = { date: s.date, w: t.band || t.w, r: t.r, e: e1rm(effW(t), t.r) };
     if (!cur.first) cur.first = rec;
     if (!cur.best || rec.e > cur.best.e) cur.best = rec;
     cur.last = rec; cur.n++; map.set(k, cur);
@@ -178,18 +222,19 @@ export function exerciseBestsText(limit = 40) {
 
 // ---------- plan → draft session ----------
 export function newSessionFromPlan(dayId) {
-  const plan = state.plans[dayId];
-  const last = lastSessionForDay(dayId);
+  const isFree = dayById(dayId).kind === 'free';
+  const plan = isFree ? null : state.plans[dayId];
+  const last = isFree ? null : lastSessionForDay(dayId);
   const exercises = [];
   if (plan && plan.exercises && plan.exercises.length) {
     for (const pe of plan.exercises) {
       exercises.push({ id: uid(), name: pe.name, note: pe.note || '', userNote: '',
-        sets: (pe.sets && pe.sets.length ? pe.sets : [{ w: null, r: null }]).map(ps => ({ w: null, r: null, pain: null, wu: !!ps.wu, done: false, tw: ps.w ?? null, tr: ps.r ?? null })) });
+        sets: (pe.sets && pe.sets.length ? pe.sets : [{ w: null, r: null }]).map(ps => ({ w: null, r: null, pain: null, wu: !!ps.wu, done: false, tw: ps.w ?? null, tr: ps.r ?? null, tb: ps.band || null })) });
     }
   } else if (last) {
     for (const le of last.exercises) {
       exercises.push({ id: uid(), name: le.name, note: '', userNote: '',
-        sets: le.sets.map(ls => ({ w: null, r: null, pain: null, wu: !!ls.wu, done: false, tw: ls.w, tr: ls.r != null ? String(ls.r) : null })) });
+        sets: le.sets.map(ls => ({ w: null, r: null, pain: null, wu: !!ls.wu, done: false, tw: ls.w, tr: ls.r != null ? String(ls.r) : null, tb: ls.band || null })) });
     }
   }
   return {
@@ -201,7 +246,7 @@ export function newSessionFromPlan(dayId) {
 export function suggestNextDay() {
   // The configured day trained least recently (or never) comes next.
   let best = null, bestDate = null;
-  for (const d of state.days) {
+  for (const d of splitDays()) {
     const last = lastSessionForDay(d.id);
     const date = last ? last.date : '0000-00-00';
     if (best == null || date < bestDate) { best = d.id; bestDate = date; }

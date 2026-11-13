@@ -2,7 +2,8 @@ import { db, requestPersistence } from './db.js';
 import {
   state, save, loadAll, uid, todayISO, fmtDate, daysAgo, dayById, doneSessions, draftSession, sessionsForDay,
   lastSessionForDay, num, e1rm, fmtW, fmtSet, topSet, maxPain, normName, allExerciseNames, lastPerformance,
-  newSessionFromPlan, suggestNextDay, sortSessions, DEFAULT_SETTINGS,
+  newSessionFromPlan, suggestNextDay, sortSessions, DEFAULT_SETTINGS, planDays,
+  bandList, parseBand, fmtBand, bandLoad, bandHex, effW, isBandDay,
 } from './store.js';
 import { md, esc } from './md.js';
 import { analyzeSession, adjustPlan, progressReport, MODELS, hasKey, AIError } from './ai.js';
@@ -53,7 +54,7 @@ const yymmdd = () => todayISO().slice(2).replace(/-/g, '');
 const ratingPill = r => r == null ? '' : `<span class="pill ${r >= 8.5 ? 'good' : r >= 7 ? 'accent' : 'warn'} rating">${fmtW(r)}/10</span>`;
 
 function topSetsLine(s, n = 3) {
-  return (s.exercises || []).slice(0, n).map(ex => { const t = topSet(ex); return t ? `${esc(ex.name)} ${fmtW(t.w)}×${t.r}` : null; }).filter(Boolean).join(' · ');
+  return (s.exercises || []).slice(0, n).map(ex => { const t = topSet(ex); return t ? `${esc(ex.name)} ${esc(fmtSet(t, { pain: false }))}` : null; }).filter(Boolean).join(' · ');
 }
 
 function download(filename, text) {
@@ -141,7 +142,7 @@ function heroHTML(dayId) {
     <div class="title">${esc(d.name)}</div>
     <div class="meta"><span><b>${exs.length}</b> exercises</span><span><b>${sets}</b> working sets</span>${last ? `<span>Last <b>${ago === 0 ? 'today' : ago + 'd ago'}</b></span>` : ''}</div>
     ${plan && plan.generalNote ? `<div class="coach-note">${esc(plan.generalNote)}</div>` : ''}
-    <ol>${exs.map(e => { const top = (e.sets || []).filter(s => !s.wu && s.w != null).sort((a, b) => b.w - a.w)[0]; return `<li><span>${esc(e.name)}</span><span class="t">${top ? `${fmtW(top.w)}×${esc(top.r)}` : ''}</span></li>`; }).join('')}</ol>
+    <ol>${exs.map(e => { const top = (e.sets || []).filter(s => !s.wu && effW(s) != null).sort((a, b) => effW(b) - effW(a))[0]; return `<li><span>${esc(e.name)}</span><span class="t">${top ? (top.band ? bandDots(top.band) + `×${esc(top.r)}` : `${fmtW(top.w)}×${esc(top.r)}`) : ''}</span></li>`; }).join('')}</ol>
     <button class="btn primary block xl" data-start="${dayId}">Start workout</button>
     <button class="btn ghost block sm mt" data-plan="${dayId}">View / change plan</button></div>`;
 }
@@ -149,9 +150,42 @@ function otherDaysHTML(next) {
   return `<h2>Other days</h2>` + state.days.filter(d => d.id !== next).map(d => {
     const last = lastSessionForDay(d.id); const ago = last ? daysAgo(last.date) : null;
     return `<div class="card day-row tap" data-start="${d.id}"><div class="sw" style="background:${d.color}"></div>
-      <div class="grow"><div class="name">${esc(d.name)}</div><div class="tiny muted">${last ? `Last ${fmtDate(last.date, { day: 'numeric', month: 'short' })} · ${ago === 0 ? 'today' : ago + ' days ago'}${last.analysis && last.analysis.rating != null ? ` · ${fmtW(last.analysis.rating)}/10` : ''}` : 'No sessions yet'}</div></div>
-      <button class="btn sm" data-plan="${d.id}">Plan</button><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg></div>`;
+      <div class="grow"><div class="name">${esc(d.name)}</div><div class="tiny muted">${d.kind === 'free' && !last ? 'Off-cycle workout · starts empty' : d.kind === 'travel' && !last ? 'Travel workout with TRX & Bandit bands' : last ? `Last ${fmtDate(last.date, { day: 'numeric', month: 'short' })} · ${ago === 0 ? 'today' : ago + ' days ago'}${last.analysis && last.analysis.rating != null ? ` · ${fmtW(last.analysis.rating)}/10` : ''}` : 'No sessions yet'}</div></div>
+      ${d.kind === 'free' ? '' : `<button class="btn sm" data-plan="${d.id}">Plan</button>`}<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg></div>`;
   }).join('');
+}
+
+
+// ---- resistance bands (TRX & Bands days)
+function bandDots(band) {
+  const o = parseBand(band); const keys = Object.keys(o);
+  if (!keys.length) return esc(band || '–');
+  return `<span class="bdots">${keys.map(k => `<span class="bdg"><b>${o[k]}</b><i style="background:${bandHex(k)}"></i></span>`).join('')}</span>`;
+}
+function bandPicker(s, ei, si) {
+  const ex = s.exercises[ei]; const set = ex.sets[si];
+  const counts = parseBand(set.band || (set.bw ? '' : set.tb) || '');
+  const bands = bandList();
+  for (const k of Object.keys(counts)) if (!bands.find(b => b.name === k)) bands.push({ name: k, value: 1, hex: bandHex(k) });
+  modal(`<h3>Bands · set ${si + 1}</h3>
+    <div class="small muted mb">${esc(ex.name)}${set.tb ? ` · target ${esc(set.tb)}` : ''}</div><div class="tiny dim mb" id="bp-kg"></div>
+    ${bands.map(b => `<div class="band-row"><i style="background:${b.hex}"></i><span class="grow"><span class="cond" style="text-transform:uppercase;letter-spacing:.06em;font-weight:600">${esc(b.name)}</span><span class="tiny dim" style="margin-left:8px">${b.range ? esc(b.range) : `≈ ${fmtW(b.value)} kg`}</span></span>
+      <button class="btn sm" data-bminus="${esc(b.name)}">−</button><span class="bcount num" data-bcount="${esc(b.name)}">${counts[b.name] || 0}</span><button class="btn sm" data-bplus="${esc(b.name)}">+</button></div>`).join('')}
+    <label class="list-check" style="border:0"><input type="checkbox" id="bp-rest"><div class="small">Also use for the following sets of this exercise</div></label>
+    <div class="btn-row mt"><button class="btn grow" id="bp-bw">No band (BW)</button><button class="btn primary grow" id="bp-ok">Done</button></div>`,
+  (m, close) => {
+    const upd = () => { m.querySelectorAll('[data-bcount]').forEach(el => { el.textContent = counts[el.dataset.bcount] || 0; }); const kg = bandLoad(fmtBand(counts)); m.querySelector('#bp-kg').textContent = kg ? `≈ ${fmtW(Math.round(kg * 10) / 10)} kg resistance` : ''; };
+    upd();
+    m.querySelectorAll('[data-bplus]').forEach(b => b.onclick = () => { counts[b.dataset.bplus] = (counts[b.dataset.bplus] || 0) + 1; upd(); });
+    m.querySelectorAll('[data-bminus]').forEach(b => b.onclick = () => { counts[b.dataset.bminus] = Math.max(0, (counts[b.dataset.bminus] || 0) - 1); upd(); });
+    const apply = (band, bw) => {
+      const targets = m.querySelector('#bp-rest').checked ? ex.sets.slice(si) : [set];
+      for (const t of targets) { t.band = band || null; t.bw = !band && bw; t.w = null; }
+      save.session(s); close(); rerenderExercise(s, ei);
+    };
+    m.querySelector('#bp-ok').onclick = () => { const band = fmtBand(counts); apply(band, !band); };
+    m.querySelector('#bp-bw').onclick = () => apply(null, true);
+  });
 }
 
 // ---------------------------------------------------------------- LOGGER
@@ -165,10 +199,15 @@ function setRowHTML(s, ei, si, prevSets = []) {
   const workingIdx = s.exercises[ei].sets.slice(0, si + 1).filter(x => !x.wu).length;
   const opts = ['<option value="">–</option>', ...Array.from({ length: 11 }, (_, i) => `<option value="${i}" ${set.pain === i ? 'selected' : ''}>${i}</option>`)].join('');
   const prev = prevSets[si];
+  const bandDay = isBandDay(s.dayId);
+  const prevTxt = !prev ? '—' : prev.band ? bandDots(prev.band) : prev.bw || (bandDay && prev.w == null) ? `BW×${prev.r ?? '?'}` : esc(`${fmtW(prev.w)}×${prev.r ?? '?'}`);
+  const loadCell = bandDay
+    ? `<button class="bandbtn ${set.band || set.bw ? '' : 'ph'}" data-action="band-pick" aria-label="Bands">${set.band ? bandDots(set.band) : set.bw ? 'BW' : set.tb ? bandDots(set.tb) : '<span class="plus">+ band</span>'}</button>`
+    : `<input inputmode="decimal" data-f="w" value="${set.w ?? ''}" placeholder="${set.tw != null ? fmtW(set.tw) : '–'}" aria-label="Weight">`;
   return `<div class="set-row grid ${set.done ? 'is-done' : ''}" data-ex="${ei}" data-set="${si}">
     <div class="idx ${set.wu ? 'wu' : ''}" data-action="toggle-wu" title="Tap to mark warm-up">${set.wu ? 'W' : workingIdx}</div>
-    <div class="prev">${prev ? esc(`${fmtW(prev.w)}×${prev.r ?? '?'}`) : '—'}</div>
-    <input inputmode="decimal" data-f="w" value="${set.w ?? ''}" placeholder="${set.tw != null ? fmtW(set.tw) : '–'}" aria-label="Weight">
+    <div class="prev">${prevTxt}</div>
+    ${loadCell}
     <input inputmode="numeric" data-f="r" value="${set.r ?? ''}" placeholder="${set.tr ?? '–'}" aria-label="Reps">
     <select data-f="pain" class="${painClass(set.pain)}" aria-label="Pain">${opts}</select>
     <button class="check ${set.done ? 'done' : ''}" data-action="check" aria-label="Set done"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></button>
@@ -184,7 +223,7 @@ function exerciseHTML(s, ei) {
     <div class="ex-head"><div class="ex-no">${String(ei + 1).padStart(2, '0')}</div><div class="grow"><div class="ex-title">${esc(ex.name)}</div><div class="ex-last ellipsis">${esc(lastTxt)}</div></div>
       <button class="icon-btn" data-action="ex-menu" data-ex="${ei}" aria-label="Exercise options"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button></div>
     ${ex.note ? `<div class="ex-note">${esc(ex.note)}</div>` : ''}
-    <div class="legend grid"><span>Set</span><span>Prev</span><span>kg</span><span>Reps</span><span>Pain</span><span></span></div>
+    <div class="legend grid"><span>Set</span><span>Prev</span><span>${isBandDay(s.dayId) ? 'Bands' : 'kg'}</span><span>Reps</span><span>Pain</span><span></span></div>
     ${ex.sets.map((_, si) => setRowHTML(s, ei, si, prevSets)).join('')}
     ${ex.userNote ? `<div class="small muted mt">Note: ${esc(ex.userNote)}</div>` : ''}
     <div class="ex-actions"><button class="btn sm ghost" data-action="del-set" data-ex="${ei}">− Remove set</button><button class="btn sm" data-action="add-set" data-ex="${ei}">+ Add set</button></div>
@@ -246,16 +285,18 @@ async function loggerAction(action, btn) {
       const set = ex.sets[+row.dataset.set];
       if (set.done) { set.done = false; }
       else {
-        if (set.w == null && set.tw != null) set.w = set.tw;
+        if (isBandDay(s.dayId)) { if (!set.band && !set.bw && set.tb) set.band = set.tb; }
+        else if (set.w == null && set.tw != null) set.w = set.tw;
         if (set.r == null && set.tr) { const m = String(set.tr).match(/\d+/); if (m) set.r = +m[0]; }
         set.done = true;
       }
       rerenderExercise(s, ei); break;
     }
+    case 'band-pick': return bandPicker(s, ei, +row.dataset.set);
     case 'toggle-wu': { const set = ex.sets[+row.dataset.set]; set.wu = !set.wu; rerenderExercise(s, ei); break; }
     case 'add-set': {
       const prev = ex.sets[ex.sets.length - 1];
-      ex.sets.push({ w: null, r: null, pain: null, wu: false, done: false, tw: prev ? (prev.w ?? prev.tw) : null, tr: prev ? (prev.r != null ? String(prev.r) : prev.tr) : null });
+      ex.sets.push({ w: null, r: null, pain: null, wu: false, done: false, tw: prev ? (prev.w ?? prev.tw) : null, tr: prev ? (prev.r != null ? String(prev.r) : prev.tr) : null, tb: prev ? (prev.band || prev.tb || null) : null });
       rerenderExercise(s, ei); break;
     }
     case 'del-set': { if (ex.sets.length) ex.sets.pop(); rerenderExercise(s, ei); break; }
@@ -300,7 +341,7 @@ function addExerciseDialog(s) {
       const name = m.querySelector('#ae-name').value.trim(); if (!name) return;
       const n = Math.max(1, Math.min(10, num(m.querySelector('#ae-sets').value) || 3));
       const last = lastPerformance(name, s.date, s.id);
-      const sets = last ? last.ex.sets.map(x => ({ w: null, r: null, pain: null, wu: !!x.wu, done: false, tw: x.w, tr: x.r != null ? String(x.r) : null }))
+      const sets = last ? last.ex.sets.map(x => ({ w: null, r: null, pain: null, wu: !!x.wu, done: false, tw: x.w, tr: x.r != null ? String(x.r) : null, tb: x.band || null }))
         : Array.from({ length: n }, () => ({ w: null, r: null, pain: null, wu: false, done: false, tw: null, tr: null }));
       s.exercises.push({ id: uid(), name, note: '', userNote: '', sets });
       save.session(s); close(); render();
@@ -422,20 +463,20 @@ async function saveManualReview(s, text) {
 
 // ---------------------------------------------------------------- SESSION DETAIL
 function sessionStats(s) {
-  let volume = 0, sets = 0; const prs = [];
+  let volume = 0, sets = 0, reps = 0; const prs = [];
   for (const ex of s.exercises || []) {
-    for (const x of ex.sets) if (!x.wu && x.w != null && x.r != null) { volume += x.w * x.r; sets++; }
+    for (const x of ex.sets) if (!x.wu && x.r != null) { reps += x.r; sets++; if (x.w != null) volume += x.w * x.r; }
     const t = topSet(ex); if (!t) continue;
     const k = normName(ex.name); let prior = 0, seen = false;
     for (const o of doneSessions()) {
       if (o.id === s.id || o.date >= s.date) continue;
       const oe = (o.exercises || []).find(e => normName(e.name) === k); if (!oe) continue;
-      const ot = topSet(oe); if (ot) { seen = true; prior = Math.max(prior, e1rm(ot.w, ot.r)); }
+      const ot = topSet(oe); if (ot) { seen = true; prior = Math.max(prior, e1rm(effW(ot), ot.r)); }
     }
-    if (seen && e1rm(t.w, t.r) > prior + 0.01) prs.push(k);
+    if (seen && e1rm(effW(t), t.r) > prior + 0.01) prs.push(k);
   }
   const dur = s.source !== 'import' && s.finishedAt && s.startedAt ? (s.finishedAt - s.startedAt) / 60000 : null;
-  return { volume, sets, prs, minutes: dur && dur > 3 && dur < 300 ? Math.round(dur) : null };
+  return { volume, reps, sets, prs, minutes: dur && dur > 3 && dur < 300 ? Math.round(dur) : null };
 }
 function renderDetail(s) {
   if (!s) { ui.detail = null; return render(); }
@@ -463,7 +504,7 @@ function renderDetail(s) {
       ${fresh ? `<div class="cond muted" style="text-transform:uppercase;letter-spacing:.1em;margin-top:6px">${esc(s.title || d.name)}</div>` : ''}
     </div>
     <div class="stats">
-      <div><div class="v">${Math.round(st.volume).toLocaleString('en-GB')}<small>kg</small></div><div class="l">Total lifted</div></div>
+      ${isBandDay(s.dayId) ? `<div><div class="v">${st.reps.toLocaleString('en-GB')}</div><div class="l">Total reps</div></div>` : `<div><div class="v">${Math.round(st.volume).toLocaleString('en-GB')}<small>kg</small></div><div class="l">Total lifted</div></div>`}
       <div><div class="v">${st.sets}</div><div class="l">Working sets</div></div>
       <div><div class="v">${st.minutes != null ? st.minutes + '<small>min</small>' : '–'}</div><div class="l">Duration</div></div>
       <div><div class="v" style="${st.prs.length ? 'color:var(--red-2)' : ''}">${st.prs.length}</div><div class="l">New bests</div></div>
@@ -485,7 +526,7 @@ function renderDetail(s) {
 function renderHistory() {
   const f = ui.histFilter;
   const list = doneSessions().filter(s => f === 'all' || s.dayId === f);
-  const seg = `<div class="seg">${[{ id: 'all', name: 'All' }, ...state.days].map(d => `<button data-hist="${d.id}" class="${f === d.id ? 'active' : ''}">${esc(d.name.split(' & ')[0])}</button>`).join('')}</div>`;
+  const seg = `<div class="seg">${[{ id: 'all', name: 'All' }, ...state.days].map(d => `<button data-hist="${d.id}" class="${f === d.id ? 'active' : ''}">${esc(d.kind === 'travel' ? 'TRX' : d.name.split(' & ')[0])}</button>`).join('')}</div>`;
   if (!list.length) { view.innerHTML = seg + `<div class="empty">No sessions yet.<br><button class="btn sm mt" data-action="open-import">Import ChatGPT history</button></div>`; return; }
   let html = seg, month = '';
   for (const s of list.slice(0, 400)) {
@@ -508,34 +549,51 @@ function renderProgress() {
   if (!sessions.length) { view.innerHTML = seg + '<div class="empty">Log or import sessions to see progress.</div>'; return; }
   if (ui.progressMode === 'overview') return renderOverview(seg, sessions);
 
-  const names = allExerciseNames().filter(x => x.count > 0);
+  const names = allExerciseNames().filter(x => x.count > 0).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
   if (!ui.progressEx || !names.find(n => normName(n.name) === normName(ui.progressEx))) ui.progressEx = names[0] && names[0].name;
   const k = normName(ui.progressEx);
   const pts = [];
+  let mode = 'kg';
   for (const s of [...sessions].reverse()) {
     const ex = (s.exercises || []).find(e => normName(e.name) === k); if (!ex) continue;
-    const t = topSet(ex); if (!t) continue;
     const [y, m, d] = s.date.split('-').map(Number);
-    pts.push({ x: new Date(y, m - 1, d).getTime(), date: s.date, w: t.w, r: t.r, e: e1rm(t.w, t.r), pain: maxPain(ex), sets: ex.sets, id: s.id });
+    const x = new Date(y, m - 1, d).getTime();
+    const work = ex.sets.filter(z => !z.wu && z.r != null);
+    if (!work.length) continue;
+    const t = topSet(ex);
+    if (t && t.band) mode = 'band';
+    pts.push({ x, date: s.date, w: t ? effW(t) : null, label: t ? (t.band || fmtW(t.w)) : 'BW', r: t ? t.r : Math.max(...work.map(z => z.r)),
+      e: t ? e1rm(effW(t), t.r) : null, maxR: Math.max(...work.map(z => z.r)), totR: work.reduce((a, z) => a + z.r, 0), pain: maxPain(ex), sets: ex.sets, id: s.id });
   }
-  const best = pts.reduce((a, p) => (!a || p.e > a.e ? p : a), null);
-  const heaviest = pts.reduce((a, p) => (!a || p.w > a.w || (p.w === a.w && p.r > a.r) ? p : a), null);
-  const first = pts[0], last = pts[pts.length - 1];
+  if (pts.length && pts.every(p => p.w == null)) mode = 'reps';
+  const lp = pts.filter(p => p.e != null);
+  const best = lp.reduce((a, p) => (!a || p.e > a.e ? p : a), null);
+  const heaviest = lp.reduce((a, p) => (!a || p.w > a.w || (p.w === a.w && p.r > a.r) ? p : a), null);
+  const first = lp[0], last = lp[lp.length - 1];
   const painPts = pts.filter(p => p.pain != null);
-  const chart = lineChart([
-    { name: 'Est. 1RM (kg)', color: '#ff3b3f', points: pts.map(p => ({ x: p.x, y: p.e, label: `${p.date}: ${fmtW(p.w)}×${p.r} → ${p.e.toFixed(1)}` })) },
-    { name: 'Top-set weight (kg)', color: '#f4f1ea', dashed: true, points: pts.map(p => ({ x: p.x, y: p.w, label: `${p.date}: ${fmtW(p.w)}×${p.r}` })) },
-    ...(painPts.length ? [{ name: 'Max pain (0–10, right axis)', color: '#f2a531', right: true, points: painPts.map(p => ({ x: p.x, y: p.pain, label: `${p.date}: pain ${p.pain}/10` })) }] : []),
-  ], { height: 220, rightAxis: painPts.length ? { min: 0, max: 10 } : null });
-
+  const painSeries = painPts.length ? [{ name: 'Max pain (0–10, right axis)', color: '#f2a531', right: true, points: painPts.map(p => ({ x: p.x, y: p.pain, label: `${p.date}: pain ${p.pain}/10` })) }] : [];
+  const unit = mode === 'band' ? 'kg, est.' : 'kg';
+  const chart = mode === 'reps'
+    ? lineChart([
+        { name: 'Best set (reps)', color: '#ff3b3f', points: pts.map(p => ({ x: p.x, y: p.maxR, label: `${p.date}: ${p.maxR} reps` })) },
+        { name: 'Total reps', color: '#f4f1ea', dashed: true, points: pts.map(p => ({ x: p.x, y: p.totR, label: `${p.date}: ${p.totR} reps` })) },
+        ...painSeries], { height: 220, yMin: 0, rightAxis: painPts.length ? { min: 0, max: 10 } : null })
+    : lineChart([
+        { name: mode === 'band' ? 'Est. 1RM (kg, from band resistance)' : 'Est. 1RM (kg)', color: '#ff3b3f', points: lp.map(p => ({ x: p.x, y: p.e, label: `${p.date}: ${p.label}×${p.r} → ${p.e.toFixed(1)}` })) },
+        { name: `Top-set load (${unit})`, color: '#f4f1ea', dashed: true, points: lp.map(p => ({ x: p.x, y: p.w, label: `${p.date}: ${p.label}×${p.r}` })) },
+        ...painSeries], { height: 220, rightAxis: painPts.length ? { min: 0, max: 10 } : null });
+  const statsHTML = mode === 'reps'
+    ? `<div class="stat"><div class="v">${Math.max(...pts.map(p => p.maxR))}</div><div class="l">Best set (reps)</div></div>
+       <div class="stat"><div class="v">${pts[pts.length - 1].totR}</div><div class="l">Total reps last time</div></div>
+       <div class="stat"><div class="v">${pts.length}</div><div class="l">Sessions</div></div>`
+    : `<div class="stat"><div class="v">${best ? best.e.toFixed(0) : '–'}</div><div class="l">${mode === 'band' ? 'Best est. 1RM (kg)' : 'Best est. 1RM'}</div></div>
+       <div class="stat"><div class="v" style="${mode === 'band' ? 'font-size:18px' : ''}">${heaviest ? (mode === 'band' ? bandDots(heaviest.label) + '×' + heaviest.r : `${fmtW(heaviest.w)}×${heaviest.r}`) : '–'}</div><div class="l">Heaviest top set</div></div>
+       <div class="stat"><div class="v">${first && last && first !== last ? `${last.e - first.e >= 0 ? '+' : ''}${Math.round((last.e / first.e - 1) * 100)}%` : '–'}</div><div class="l">${mode === 'band' ? 'Change since first' : '1RM since first'}</div></div>`;
   view.innerHTML = seg + `
     <label class="field"><span>Exercise</span><select class="input" id="pg-ex">${names.map(n => `<option ${normName(n.name) === k ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
-    <div class="stat-grid">
-      <div class="stat"><div class="v">${best ? best.e.toFixed(0) : '–'}</div><div class="l">Best est. 1RM</div></div>
-      <div class="stat"><div class="v">${heaviest ? `${fmtW(heaviest.w)}×${heaviest.r}` : '–'}</div><div class="l">Heaviest top set</div></div>
-      <div class="stat"><div class="v">${first && last && first !== last ? `${last.e - first.e >= 0 ? '+' : ''}${Math.round((last.e / first.e - 1) * 100)}%` : '–'}</div><div class="l">1RM since first</div></div>
+    <div class="stat-grid">${statsHTML}
     </div>
-    <div class="card">${chart}</div>
+    <div class="card">${chart}${mode === 'band' ? '<div class="tiny dim mt">Band kg are estimates: each band counts at the middle of its resistance range (Settings → TRX Bandit bands).</div>' : ''}</div>
     <h2>Recent sessions</h2>
     <div class="card">${pts.slice(-12).reverse().map(p => `<div class="row between tap" data-open="${p.id}" style="padding:6px 0;border-bottom:1px solid var(--line);cursor:pointer"><span class="small muted">${fmtDate(p.date, { day: 'numeric', month: 'short', year: '2-digit' })}</span><span class="small ellipsis grow" style="text-align:right">${p.sets.filter(x => !x.wu).map(x => fmtSet(x)).join(' · ')}</span></div>`).join('')}</div>`;
   $('#pg-ex').onchange = e => { ui.progressEx = e.target.value; render(); };
@@ -575,13 +633,13 @@ function renderOverview(seg, sessions) {
 // ---------------------------------------------------------------- COACH
 function planHTML(p) {
   if (!p || !p.exercises || !p.exercises.length) return '<div class="small muted">No plan yet.</div>';
-  return `${p.generalNote ? `<div class="coach-note">${esc(p.generalNote)}</div>` : ''}${p.exercises.map((e, i) => `<div class="plan-ex"><div class="n"><span style="color:var(--red-2);margin-right:8px">${String(i + 1).padStart(2, '0')}</span>${esc(e.name)}</div><div class="set-list">${e.sets.map(s => `${s.wu ? 'wu ' : ''}<b>${s.w == null ? '?' : fmtW(s.w)}×${esc(s.r)}</b>`).join('<span class="dim"> · </span>')}</div>${e.note ? `<div class="small muted">${esc(e.note)}</div>` : ''}</div>`).join('')}`;
+  return `${p.generalNote ? `<div class="coach-note">${esc(p.generalNote)}</div>` : ''}${p.exercises.map((e, i) => `<div class="plan-ex"><div class="n"><span style="color:var(--red-2);margin-right:8px">${String(i + 1).padStart(2, '0')}</span>${esc(e.name)}</div><div class="set-list">${e.sets.map(s => `${s.wu ? 'wu ' : ''}<b>${s.band ? esc(s.band) : s.w == null ? (s.bw ? 'BW' : '?') : fmtW(s.w)}×${esc(s.r)}</b>`).join('<span class="dim"> · </span>')}</div>${e.note ? `<div class="small muted">${esc(e.note)}</div>` : ''}</div>`).join('')}`;
 }
 
 function renderCoach() {
   const sixMonthsAgo = (() => { const d = new Date(); d.setMonth(d.getMonth() - 6); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); })();
   let html = `<h2>Next session plans</h2>`;
-  for (const d of state.days) {
+  for (const d of planDays()) {
     const p = state.plans[d.id];
     html += `<div class="card" style="border-left:3px solid ${d.color}">
       <div class="row between"><h3>${esc(d.name)}</h3><span class="tiny dim">${p ? (p.origin === 'starter' ? 'starter plan' : p.origin === 'manual' ? 'edited' : 'from coach · ' + new Date(p.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })) : ''}</span></div>
@@ -642,7 +700,7 @@ function showPlan(dayId) {
 }
 
 function planToEditable(p) {
-  return (p && p.exercises || []).map(e => `${e.name}: ${e.sets.map(s => `${s.wu ? 'wu ' : ''}${s.w == null ? '?' : fmtW(s.w)}x${s.r}`).join(', ')}${e.note ? ` | ${e.note}` : ''}`).join('\n');
+  return (p && p.exercises || []).map(e => `${e.name}: ${e.sets.map(s => `${s.wu ? 'wu ' : ''}${s.band ? s.band : s.w == null ? (s.bw ? 'bw' : '?') : fmtW(s.w)}x${s.r}`).join(', ')}${e.note ? ` | ${e.note}` : ''}`).join('\n');
 }
 
 function parseEditable(text, dayId, old) {
@@ -651,8 +709,13 @@ function parseEditable(text, dayId, old) {
     const m = line.match(/^\s*([^:]+):\s*([^|]*)(?:\|\s*(.*))?$/); if (!m) continue;
     const sets = m[2].split(',').map(x => x.trim()).filter(Boolean).map(x => {
       const wu = /^wu\s+/i.test(x); x = x.replace(/^wu\s+/i, '');
-      const mm = x.match(/^([\d.,?]+)\s*[x×]\s*([\d\-–]+)/i);
-      return mm ? { w: mm[1] === '?' ? null : num(mm[1]), r: mm[2].replace('–', '-'), wu } : null;
+      const mm = x.match(/^(.+?)\s*[x×]\s*([\d\-–]+)\s*$/i);
+      if (!mm) return null;
+      const left = mm[1].trim(), r = mm[2].replace('–', '-');
+      if (/^[\d.,]+$/.test(left)) return { w: num(left), r, wu };
+      if (left === '?') return { w: null, r, wu };
+      if (/^bw$/i.test(left)) return { w: null, r, wu, bw: true };
+      const band = fmtBand(parseBand(left)); return band ? { w: null, band, r, wu } : null;
     }).filter(Boolean);
     exercises.push({ name: m[1].trim(), note: (m[3] || '').trim(), sets });
   }
@@ -734,6 +797,7 @@ function renderSettings() {
       <label class="field"><span>Goal</span><textarea class="input" id="st-goal">${esc(s.goal)}</textarea></label>
       <label class="field"><span>Standing rules (one per line)</span><textarea class="input" id="st-rules" style="min-height:150px">${esc(s.rules)}</textarea></label>
       <label class="field"><span>Coaching style</span><textarea class="input" id="st-style">${esc(s.coachStyle)}</textarea></label>
+      <label class="field"><span>TRX Bandit bands (one per line: colour = kg at mid-stretch, range optional)</span><textarea class="input" id="st-bands" style="min-height:70px">${esc(s.bands || '')}</textarea></label>
       <label class="field"><span>Previous sessions of the same day sent with each review</span><input class="input" id="st-depth" inputmode="numeric" value="${s.historyDepth}"></label>
     </div>
     <h2>Split days</h2>
@@ -750,13 +814,13 @@ function renderSettings() {
       </div>
       <div class="btn-row mt">
         <button class="btn sm" data-action="export">Export backup</button>
-        <label class="btn sm">Restore backup<input type="file" accept="application/json,.json" id="st-restore" hidden></label>
+        <label class="btn sm">Load backup / add sessions<input type="file" accept="application/json,.json" id="st-restore" hidden></label>
       </div>
       <div class="small muted mt">${doneSessions().length} sessions stored · ${persisted}</div>
     </div>
     <h2>Danger zone</h2>
     <div class="card"><button class="btn sm danger" data-action="wipe">Delete all data…</button></div>
-    <div class="center tiny dim mt">Workout Coach v3.0</div>`;
+    <div class="center tiny dim mt">Workout Coach v3.3</div>`;
 
   $('#st-save').onclick = async () => {
     s.apiKey = $('#st-key').value.trim();
@@ -765,23 +829,44 @@ function renderSettings() {
     s.rules = $('#st-rules').value.trim();
     s.coachStyle = $('#st-style').value.trim() || DEFAULT_SETTINGS.coachStyle;
     s.historyDepth = Math.max(2, Math.min(30, num($('#st-depth').value) || 8));
+    s.bands = $('#st-bands').value.trim() || DEFAULT_SETTINGS.bands;
     document.querySelectorAll('[data-dayname]').forEach(inp => { state.days[+inp.dataset.dayname].name = inp.value.trim() || state.days[+inp.dataset.dayname].name; });
     document.querySelectorAll('[data-daycolor]').forEach(inp => { state.days[+inp.dataset.daycolor].color = inp.value; });
     await save.settings(); await save.days(); toast('Settings saved'); render(); runPending();
   };
   $('#st-restore').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
-    try {
-      const data = JSON.parse(await readFileText(f));
-      if (!data || !Array.isArray(data.sessions)) throw new Error('Not a Workout Coach backup');
-      if (!(await confirmDialog('Restore backup?', `This replaces all current data with ${data.sessions.length} sessions from the backup. Your API key is kept.`, 'Replace data', true))) return;
-      const key = state.settings.apiKey;
-      state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}), apiKey: key };
-      state.days = data.days || state.days; state.plans = data.plans || {}; state.reports = data.reports || [];
-      await db.clearSessions(); await db.putSessions(data.sessions); state.sessions = data.sessions; sortSessions();
-      await save.settings(); await save.days(); await save.plans(); await save.reports();
-      toast('Backup restored'); render();
-    } catch (err) { toast('Restore failed: ' + err.message, 4000); }
+    e.target.value = '';
+    let data;
+    try { data = JSON.parse(await readFileText(f)); if (!data || !Array.isArray(data.sessions)) throw new Error('Not a Workout Coach backup'); }
+    catch (err) { return toast('Restore failed: ' + err.message, 4000); }
+    const ids = new Set(state.sessions.map(x => x.id));
+    const fresh = data.sessions.filter(x => !ids.has(x.id));
+    modal(`<h3>Load backup file</h3>
+      <p class="muted">The file has <b>${data.sessions.length}</b> session${data.sessions.length === 1 ? '' : 's'}, <b>${fresh.length}</b> ${fresh.length === 1 ? 'is' : 'are'} new to the app.</p>
+      <button class="btn primary block mb" id="rs-add" ${fresh.length ? '' : 'disabled'}>Add ${fresh.length} new sessions</button>
+      <div class="small muted mb">Keeps everything you have and adds only the new sessions. Plans and settings stay as they are.</div>
+      <button class="btn danger block mb" id="rs-replace">Replace all data</button>
+      <div class="small muted mb">Deletes the sessions, plans and reports in the app and loads the file instead. Your API key is kept.</div>
+      <button class="btn ghost block" data-close>Cancel</button>`,
+    (m, close) => {
+      m.querySelector('#rs-add').onclick = async () => {
+        const known = new Set(state.days.map(d => d.id));
+        for (const d of data.days || []) if (!known.has(d.id)) state.days.push(d);
+        state.sessions.push(...fresh); sortSessions(); await db.putSessions(fresh); await save.days();
+        close(); toast(`${fresh.length} sessions added`); render();
+      };
+      m.querySelector('#rs-replace').onclick = async () => {
+        close();
+        if (!(await confirmDialog('Replace all data?', `This deletes the ${doneSessions().length} sessions in the app and loads ${data.sessions.length} from the file. Export a backup first if you are unsure.`, 'Replace data', true))) return;
+        const key = state.settings.apiKey;
+        state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}), apiKey: key };
+        state.days = data.days || state.days; state.plans = data.plans || {}; state.reports = data.reports || [];
+        await db.clearSessions(); await db.putSessions(data.sessions); state.sessions = data.sessions; sortSessions();
+        await save.settings(); await save.days(); await save.plans(); await save.reports();
+        toast('Backup restored'); location.reload();
+      };
+    });
   };
 }
 
@@ -805,7 +890,7 @@ async function rebuildPlans() {
   if (!(await confirmDialog('Rebuild all plans?', 'The coach builds a fresh next-session plan for each split day from your latest history. You can undo per day on the Coach tab.', 'Rebuild'))) return;
   const close = modal(`<h3>Rebuilding plans</h3><div id="rb-log" class="small muted"></div>`);
   const log = document.getElementById('rb-log');
-  for (const d of state.days) {
+  for (const d of planDays()) {
     if (!sessionsForDay(d.id).length) { log.innerHTML += `<div>${esc(d.name)}: no history, skipped</div>`; continue; }
     log.innerHTML += `<div id="rb-${d.id}"><span class="spinner"></span> ${esc(d.name)}…</div>`;
     try {
@@ -958,7 +1043,7 @@ view.addEventListener('click', async e => {
   if (ds.pmode) { ui.progressMode = ds.pmode; return render(); }
   if (ds.report) return openReport(ds.report);
   const a = ds.action;
-  if (['check', 'toggle-wu', 'add-set', 'del-set', 'ex-menu', 'add-ex', 'discard', 'finish'].includes(a)) return loggerAction(a, t);
+  if (['check', 'toggle-wu', 'band-pick', 'add-set', 'del-set', 'ex-menu', 'add-ex', 'discard', 'finish'].includes(a)) return loggerAction(a, t);
   switch (a) {
     case 'back': ui.detail = null; render(); return;
     case 'keep-review': { const s = state.sessions.find(x => x.id === ds.id); if (s && s.analysis && s.analysis.prev) { s.analysis = s.analysis.prev; await save.session(s); render(); } return; }

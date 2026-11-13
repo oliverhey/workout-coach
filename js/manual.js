@@ -1,9 +1,10 @@
 // Free "copy & paste" coach mode: the app writes the prompt, the user runs it in the Claude app
 // (covered by a Claude subscription) and pastes the reply back. No API key needed.
-import { state, dayById, doneSessions, sessionToText, planToText, exerciseBestsText } from './store.js';
+import { state, planDays, dayById, doneSessions, sessionToText, planToText, exerciseBestsText } from './store.js';
 import { coachSystem, historyContext, planFromTool } from './ai.js';
 
-const PLAN_SHAPE = `{"general_note": "one or two sentences of focus", "exercises": [{"name": "Exercise name", "note": "short cue or target, or empty", "sets": [{"weight": 80, "reps": "8-10", "warmup": false}]}]}`;
+const PLAN_SHAPE = `{"general_note": "one or two sentences of focus", "exercises": [{"name": "Exercise name", "note": "short cue or target, or empty", "sets": [{"weight": 80, "band": null, "reps": "8-10", "warmup": false}]}]}
+For TRX & Bands sessions use "band" (e.g. "2 green / 1 blue") with "weight": null; for bodyweight sets both are null.`;
 
 const intro = () => `${coachSystem()}\n\n(I'm pasting this from my training app. Please answer in the exact reply format at the end so the app can read it.)`;
 
@@ -43,7 +44,8 @@ ${PLAN_SHAPE}`,
 }
 
 export function rebuildAllPrompt() {
-  const blocks = state.days.map(d => historyContext(d.id).split('\n\n## Most recent other sessions')[0]);
+  const days = planDays().filter(d => doneSessions().some(s => s.dayId === d.id));
+  const blocks = days.map(d => historyContext(d.id).split('\n\n## Most recent other sessions')[0]);
   return [
     intro(),
     blocks.join('\n\n'),
@@ -51,7 +53,7 @@ export function rebuildAllPrompt() {
     `Build my next session for each split day from my most recent sessions. Keep my exercise selection and order unless there is a clear reason to change it, and keep exercise names exactly as logged.`,
     `## Reply format (important)
 A few lines of Markdown on the main priorities, then ONE JSON code block (\`\`\`json … \`\`\`) with all plans, keyed by day id:
-{"plans": {${state.days.map(d => `"${d.id}": <plan for ${d.name}>`).join(', ')}}}
+{"plans": {${days.map(d => `"${d.id}": <plan for ${d.name}>`).join(', ')}}}
 where each plan has exactly this shape:
 ${PLAN_SHAPE}`,
   ].join('\n\n');
@@ -132,7 +134,7 @@ export function parseRebuild(text) {
   const found = findPlanJson(String(text || ''));
   if (!found || !found.json.plans) throw new Error('No plans found in the reply. Paste Claude\'s whole answer, including the JSON block.');
   const plans = {};
-  for (const d of state.days) {
+  for (const d of planDays()) {
     const ns = found.json.plans[d.id];
     if (ns && Array.isArray(ns.exercises) && ns.exercises.length) plans[d.id] = planFromTool(d.id, ns, null, 'claude-app');
   }

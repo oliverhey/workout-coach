@@ -1,5 +1,5 @@
 // Claude API integration. Calls go straight from the device to api.anthropic.com with the user's own key.
-import { state, save, dayById, sessionsForDay, doneSessions, sessionToText, planToText, exerciseBestsText, todayISO } from './store.js';
+import { state, save, dayById, splitDays, bandList, sessionsForDay, doneSessions, sessionToText, planToText, exerciseBestsText, todayISO } from './store.js';
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -60,7 +60,8 @@ export function coachSystem() {
     `Client goal: ${s.goal}`,
     `Standing rules you always respect:\n${s.rules}`,
     `Style: ${s.coachStyle}`,
-    `The client trains these split days: ${state.days.map(d => d.name).join(' / ')}.`,
+    `The client trains a rotating split: ${splitDays().map(d => d.name).join(' / ')}. Other session types: "Free" = an off-cycle extra workout squeezed in between split days (judge it on its own and consider its recovery cost for the split), "TRX & Bands" = workouts with a TRX suspension trainer and TRX Bandit resistance bands, mostly while traveling (loads are band levels or bodyweight, not comparable to gym kg).`,
+    `TRX & Bands sets are written as band colours × reps, e.g. "2 green / 1 blue×15" (that set used two green and one blue band). Bands stack: the load of a set is roughly the sum of its bands. Band resistance in kg at mid-stretch (full range in brackets): ${bandList().map(b => `${b.name} ≈ ${b.value} kg${b.range ? ` (${b.range})` : ''}`).join(', ')}. E.g. "2 green / 1 blue" ≈ ${(() => { const v = Object.fromEntries(bandList().map(b => [b.name, b.value])); return Math.round(((v.green || 0) * 2 + (v.blue || 0)) * 10) / 10; })()} kg. "BW×15" or "?×15" on a TRX/band day means bodyweight only.`,
     'Never invent performance data. If something was not recorded, say so. Write in English. Use Markdown (short headings, bold, small tables) — this is read on a phone.',
   ].join('\n\n');
 }
@@ -82,7 +83,8 @@ const PLAN_SCHEMA = {
             items: {
               type: 'object',
               properties: {
-                weight: { type: ['number', 'null'], description: 'Target load in kg; null if unknown (e.g. new machine).' },
+                weight: { type: ['number', 'null'], description: 'Target load in kg; null if unknown (e.g. new machine) and for band or bodyweight sets.' },
+                band: { type: ['string', 'null'], description: 'Only for TRX & Bands: band colours like "2 green / 1 blue"; null otherwise.' },
                 reps: { type: 'string', description: 'Target reps, e.g. "10" or "8-10".' },
                 warmup: { type: 'boolean' },
               },
@@ -103,7 +105,7 @@ export function planFromTool(dayId, ns, sourceSessionId, origin) {
     generalNote: ns.general_note || '',
     exercises: (ns.exercises || []).map(e => ({
       name: e.name, note: e.note || '',
-      sets: (e.sets || []).map(s => ({ w: typeof s.weight === 'number' ? s.weight : null, r: String(s.reps ?? ''), wu: !!s.warmup })),
+      sets: (e.sets || []).map(s => ({ w: typeof s.weight === 'number' ? s.weight : null, r: String(s.reps ?? ''), wu: !!s.warmup, ...(s.band ? { band: String(s.band) } : {}) })),
     })),
   };
 }
@@ -111,7 +113,7 @@ export function planFromTool(dayId, ns, sourceSessionId, origin) {
 export function historyContext(dayId, excludeId) {
   const depth = state.settings.historyDepth || 8;
   const same = sessionsForDay(dayId).filter(s => s.id !== excludeId).slice(0, depth);
-  const others = state.days.filter(d => d.id !== dayId).map(d => sessionsForDay(d.id).filter(s => s.id !== excludeId)[0]).filter(Boolean);
+  const others = splitDays().filter(d => d.id !== dayId).map(d => sessionsForDay(d.id).filter(s => s.id !== excludeId)[0]).filter(Boolean);
   const recentAll = doneSessions().filter(s => s.id !== excludeId).slice(0, 6);
   return [
     `## Previous ${dayById(dayId).name} sessions (newest first)\n` + (same.length ? same.map(s => sessionToText(s, { withAnalysis: true })).join('\n\n') : '(none yet)'),
@@ -217,9 +219,10 @@ export async function structureLogs(entries, knownNames) {
                         type: 'object',
                         properties: {
                           w: { type: ['number', 'null'] }, r: { type: ['integer', 'null'] },
+                          band: { type: ['string', 'null'], description: 'Band colours instead of kg, e.g. "2 green / 1 blue"; null for kg or bodyweight sets.' },
                           pain: { type: ['number', 'null'] }, wu: { type: 'boolean' },
                         },
-                        required: ['w', 'r', 'pain', 'wu'],
+                        required: ['w', 'r', 'pain', 'wu', 'band'],
                       },
                     },
                   },

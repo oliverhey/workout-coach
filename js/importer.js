@@ -147,7 +147,7 @@ export async function runImport(entries, { onProgress, shouldStop } = {}) {
         id: 'imp_' + e.id + '_' + toSave.length, date: r.date || e.ts, dayId, title: r.title || '', status: 'done',
         startedAt: e.tsMs, finishedAt: e.tsMs, bodyweight: r.bodyweight ?? null, notes: r.notes || '', source: 'import', importTs: e.tsMs,
         exercises: r.exercises.map(x => ({ id: uid(), name: x.name, note: '', userNote: x.note || '',
-          sets: (x.sets || []).map(s => ({ w: s.w ?? null, r: s.r ?? null, pain: s.pain ?? null, wu: !!s.wu, done: true, tw: null, tr: null })) })),
+          sets: (x.sets || []).map(s => ({ w: s.w ?? null, band: s.band || undefined, r: s.r ?? null, pain: s.pain ?? null, wu: !!s.wu, done: true, tw: null, tr: null })) })),
         analysis: null,
       };
       if (!firstForEntry.has(r.entry) && e.reply) {

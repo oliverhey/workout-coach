@@ -424,20 +424,36 @@ async function copyText(text) {
   }
 }
 function manualSteps(id, what = 'prompt') {
-  return `<div class="mstep"><div class="kicker">Step 1</div><div class="small mb">Copy the ${what} and paste it into a <b>new chat</b> in the Claude app.</div>
+  return `<div class="mstep"><div class="kicker">Step 1 · Ask Claude</div><div class="small mb">Copy the ${what} and paste it into a <b>new chat</b> in the Claude app.</div>
       <div class="btn-row"><button class="btn primary grow" id="${id}-copy">Copy for Claude</button><a class="btn" href="${CLAUDE_URL}" target="_blank" rel="noopener">Open Claude</a></div></div>
-    <div class="mstep mt"><div class="kicker">Step 2</div><div class="small mb">When Claude has answered, copy its whole reply (copy icon below the answer) and paste it here.</div>
-      <textarea class="input" id="${id}-reply" placeholder="Paste Claude's reply…" style="min-height:130px;font-size:13.5px"></textarea>
-      <div class="btn-row mt"><button class="btn sm" id="${id}-paste">Paste</button><button class="btn primary grow" id="${id}-save">Save reply</button></div></div>`;
+    <div class="mstep mt"><div class="kicker">Step 2 · Bring the answer back</div>
+      <div class="small mb">Copy Claude's <b>whole answer</b> (copy icon below it) and tap <b>Paste answer</b>. The answer includes a JSON block at the end; that's the plan, and the app reads it automatically.</div>
+      <div class="btn-row mb"><button class="btn primary grow" id="${id}-paste">Paste answer</button><label class="btn">Add file<input type="file" id="${id}-file" accept=".json,.txt,.md,application/json,text/plain,text/markdown" hidden></label></div>
+      <div class="tiny dim mb">Claude made a separate file for the plan? Download it in the Claude app and add it with <b>Add file</b>. Pasting only the JSON works too.</div>
+      <textarea class="input" id="${id}-reply" placeholder="Claude's answer appears here — you can also paste or type into this box" style="min-height:120px;font-size:13.5px"></textarea>
+      <div class="small mt" id="${id}-status"></div>
+      <button class="btn primary block mt" id="${id}-save">Save</button></div>`;
 }
 function wireManual(root, id, getPrompt, onSave) {
+  const box = root.querySelector(`#${id}-reply`), status = root.querySelector(`#${id}-status`);
+  const check = () => {
+    const t = box.value.trim();
+    if (!t) { status.innerHTML = ''; return; }
+    const hasJson = /```(?:json)?[\s\S]*?"exercises"[\s\S]*?```/i.test(t) || /^\s*\{[\s\S]*"exercises"[\s\S]*\}\s*$/.test(t) || /"plans"\s*:/.test(t);
+    const hasReview = /rating/i.test(t) || t.replace(/```[\s\S]*?```/g, '').trim().length > 80;
+    status.innerHTML = [hasReview ? '<span class="pill good">Review text ✓</span>' : '<span class="pill warn">No review text</span>', hasJson ? '<span class="pill good">Plan (JSON) ✓</span>' : '<span class="pill warn">No plan JSON — add the file if Claude made one</span>'].join(' ');
+  };
+  const add = text => { text = String(text || '').trim(); if (!text) return; box.value = (box.value.trim() ? box.value.trim() + '\n\n' : '') + (/^\s*[\[{]/.test(text) ? '```json\n' + text + '\n```' : text); check(); };
+  box.addEventListener('input', check);
   root.querySelector(`#${id}-copy`).onclick = () => copyText(getPrompt());
   root.querySelector(`#${id}-paste`).onclick = async () => {
-    try { root.querySelector(`#${id}-reply`).value = await navigator.clipboard.readText(); } catch (e) { toast('Tap the box and paste manually'); root.querySelector(`#${id}-reply`).focus(); }
+    try { const t = await navigator.clipboard.readText(); if (!t.trim()) return toast('Clipboard is empty — copy Claude\'s answer first'); add(t); }
+    catch (e) { toast('Tap the box and paste manually'); box.focus(); }
   };
-  root.querySelector(`#${id}-save`).onclick = async e => {
-    const text = root.querySelector(`#${id}-reply`).value.trim();
-    if (!text) return toast('Paste Claude\'s reply first');
+  root.querySelector(`#${id}-file`).onchange = async e => { const f = e.target.files[0]; if (!f) return; add(await readFileText(f)); e.target.value = ''; toast('File added'); };
+  root.querySelector(`#${id}-save`).onclick = async () => {
+    const text = box.value.trim();
+    if (!text) return toast('Paste Claude\'s answer first');
     try { await onSave(text); } catch (err) { toast(err.message, 5000); }
   };
 }
@@ -820,7 +836,7 @@ function renderSettings() {
     </div>
     <h2>Danger zone</h2>
     <div class="card"><button class="btn sm danger" data-action="wipe">Delete all data…</button></div>
-    <div class="center tiny dim mt">Workout Coach v3.3</div>`;
+    <div class="center tiny dim mt">Workout Coach v3.4</div>`;
 
   $('#st-save').onclick = async () => {
     s.apiKey = $('#st-key').value.trim();
